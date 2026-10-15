@@ -8,4 +8,5 @@ dependencies = [
     "torch>=2.0",
     "matplotlib>=3.5",
     "torchvision>=0.29.1",
+    "wandb>=0.30.0",
 ]

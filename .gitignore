@@ -9,3 +9,4 @@ mnist/configs/*
 !mnist/configs/teacher.toml
 !mnist/configs/student_hard.toml
 !mnist/configs/student_distill.toml
+wandb/

@@ -19,6 +19,8 @@ what each one means and where its value comes from. Any setting can also be give
 the command line, which takes precedence over the file:
 
   uv run mnist/train_teacher.py --config mnist/configs/teacher.toml --lr 1 --no-bias
+
+Training metrics go to Weights & Biases (project distillation-mnist) unless --no-wandb.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ import json
 import torch
 import torch.nn.functional as F
 
-from common import HERE, add_training_args, config_dict, load_mnist, make_model, parse_args, save_run, train
+from common import HERE, add_training_args, config_dict, load_mnist, make_model, parse_args, save_run, start_run, train
 
 
 def main() -> None:
@@ -38,11 +40,12 @@ def main() -> None:
     args = parse_args(p)
     print(json.dumps(config_dict(args), indent=2))
 
+    run = start_run(args, job="teacher", paper_test_errors=67)
     torch.manual_seed(args.seed)
     data = load_mnist(args.device)
     model = make_model(args)
-    history = train(model, args, data, lambda logits, x, y: F.cross_entropy(logits, y))
-    save_run(model, args, history)
+    history = train(model, args, data, lambda logits, x, y: {"loss": F.cross_entropy(logits, y)}, run)
+    save_run(model, args, history, run)
 
 
 if __name__ == "__main__":

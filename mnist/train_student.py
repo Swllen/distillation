@@ -21,6 +21,9 @@ common.train); all settings live in configs/student_hard.toml and
 configs/student_distill.toml, and flags override them:
 
   uv run mnist/train_student.py --config mnist/configs/student_distill.toml --temperature 8
+
+Training metrics go to Weights & Biases (project distillation-mnist) unless --no-wandb.
+For distillation runs the loss is split into soft_kl, teacher_entropy and hard_ce.
 """
 
 from __future__ import annotations
@@ -32,17 +35,39 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from common import HERE, add_training_args, config_dict, load_mnist, load_model, make_model, parse_args, save_run, test_errors, train
+from common import (
+    HERE,
+    add_training_args,
+    config_dict,
+    load_mnist,
+    load_model,
+    make_model,
+    parse_args,
+    save_run,
+    start_run,
+    test_errors,
+    train,
+)
 
 
 def distillation_loss(
     student_logits: torch.Tensor, teacher_logits: torch.Tensor, y: torch.Tensor, temperature: float, hard_weight: float
-) -> torch.Tensor:
+) -> dict[str, torch.Tensor]:
+    """Loss terms; "loss" is minimized. soft_ce = teacher_entropy + soft_kl, all at temperature T and
+    without the T^2 factor, so soft_kl is the part the student can reduce (its minimum is 0)."""
     t = temperature
-    soft_targets = F.softmax(teacher_logits / t, dim=1)
-    soft = -(soft_targets * F.log_softmax(student_logits / t, dim=1)).sum(dim=1).mean()
+    log_p = F.log_softmax(teacher_logits / t, dim=1)
+    p = log_p.exp()
+    soft = -(p * F.log_softmax(student_logits / t, dim=1)).sum(dim=1).mean()
+    entropy = -(p * log_p).sum(dim=1).mean()
     hard = F.cross_entropy(student_logits, y)
-    return (1 - hard_weight) * t * t * soft + hard_weight * hard
+    return {
+        "loss": (1 - hard_weight) * t * t * soft + hard_weight * hard,
+        "soft_ce": soft,
+        "soft_kl": soft - entropy,
+        "teacher_entropy": entropy,
+        "hard_ce": hard,
+    }
 
 
 def main() -> None:
@@ -54,6 +79,8 @@ def main() -> None:
     args = parse_args(p)
     print(json.dumps(config_dict(args), indent=2))
 
+    # Paper numbers for the 800-800 net: 74 test errors distilled at T = 20, 146 on hard labels.
+    run = start_run(args, job="student", paper_test_errors=(74 if args.temperature == 20 else None) if args.teacher else 146)
     torch.manual_seed(args.seed)
     data = load_mnist(args.device)
     model = make_model(args)
@@ -61,19 +88,21 @@ def main() -> None:
     if args.teacher:
         path = Path(args.teacher)
         teacher = load_model(path if path.is_absolute() else HERE / path, args.device)
-        print(f"teacher {args.teacher}: {test_errors(teacher, data[2], data[3])} test errors")
+        teacher_errors = test_errors(teacher, data[2], data[3])
+        run.summary["teacher_test_errors"] = teacher_errors
+        print(f"teacher {args.teacher}: {teacher_errors} test errors")
 
-        def loss_fn(logits: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        def loss_fn(logits: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
             with torch.no_grad():
                 teacher_logits = teacher(x)
             return distillation_loss(logits, teacher_logits, y, args.temperature, args.hard_weight)
     else:
 
-        def loss_fn(logits: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-            return F.cross_entropy(logits, y)
+        def loss_fn(logits: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
+            return {"loss": F.cross_entropy(logits, y)}
 
-    history = train(model, args, data, loss_fn)
-    save_run(model, args, history)
+    history = train(model, args, data, loss_fn, run)
+    save_run(model, args, history, run)
 
 
 if __name__ == "__main__":

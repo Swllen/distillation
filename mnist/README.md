@@ -80,15 +80,40 @@ The T² factor keeps the soft-target gradients on the same scale as T changes. T
 | Transfer set | the 60,000 training images, unjittered | not stated; Section 2 says the original training set works well |
 | Optimizer, schedule, init, epochs | same as the 66-error teacher run (ε₀ = 1, 3000 epochs) | not given for the student |
 
-The student runs have no max-norm. With ε₀ = 1 that combination has not been tried yet; if a run diverges, try a smaller `lr`.
+The student runs have no max-norm, and ε₀ = 1 is too large for distillation: the distilled student died at once (loss 828.5 ≈ 0.9 · T² · ln 10, i.e. uniform outputs; 9026 test errors). With T² scaling the soft-target gradient on the logits is roughly (z − v)/10, so it grows with the size of the teacher's logits and can be several times larger than a hard-label gradient. With ε₀ = 0.1 the distilled student reached 96 test errors after 25 epochs. Use the same `lr` for both students so that only the targets differ:
 
 ```bash
-uv run mnist/train_student.py --config mnist/configs/student_hard.toml
-uv run mnist/train_student.py --config mnist/configs/student_distill.toml
+uv run mnist/train_student.py --config mnist/configs/student_hard.toml --lr 0.1
+uv run mnist/train_student.py --config mnist/configs/student_distill.toml --lr 0.1
 ```
+
+The distillation loss contains the teacher's entropy H(softmax(v/T)), which the student cannot reduce, so the printed loss stays near 0.9 · 400 · H ≈ 777. W&B logs the part that does go to 0 as `train/soft_kl`.
 
 `student_distill.toml` reads the teacher from `mnist/checkpoints/teacher.pt` and prints its test errors before training starts.
 
+## Dashboard (Weights & Biases)
+
+Every run of `train_teacher.py` and `train_student.py` logs to [Weights & Biases](https://wandb.ai), project `distillation-mnist`. The run is named after the config file (`--name` changes it), and its full config, including command-line overrides, is stored with it. One-time setup on each machine:
+
+```bash
+uv sync
+uv run wandb login        # paste the API key from https://wandb.ai/authorize
+```
+
+| Panel | Metrics | Logged |
+|---|---|---|
+| `train/` | `loss`, `grad_norm`; for distillation also `soft_kl`, `soft_ce`, `teacher_entropy`, `hard_ce` | mean over every `log_every` steps (default 100) |
+| `optim/` | `lr` (ε), `effective_lr` ((1 − p) ε, the PyTorch-equivalent rate), `momentum` | every `log_every` steps |
+| `test/` | `errors`, `loss`, `dead_units_fc1`, `dead_units_fc2` (hidden units never active on the test set) | every `eval_every` epochs |
+| `train/` (eval) | `errors`, `eval_loss` on the 60,000 training images without dropout or jitter, `epoch_loss` | every `eval_every` epochs |
+| `weights/` | `fc{1,2}_max_row_norm`, `fc{1,2}_frac_at_max_norm` (hidden units at the max-norm cap) | every `eval_every` epochs |
+
+All panels use `epoch` as the x-axis. The run summary holds `final_test_errors`, `final_train_errors`, `paper_test_errors` (67, 146 or 74) and, for distillation, `teacher_test_errors`.
+
+- No logging: `--no-wandb`. No network on the server: `WANDB_MODE=offline uv run ...`, then `uv run wandb sync wandb/offline-run-*` from a machine that has network.
+- Sharing: a project is private to your account by default. Either make the project public or invite the viewer under the project's settings on wandb.ai, or put the panels in a W&B Report and share its link.
+- `wandb/` (local run files) is in `.gitignore`.
+
 ## Code
 
-`common.py` holds everything the two scripts share: data loading, jitter, the `MLP` class, config parsing, the optimizer of [5], the training loop, saving and loading checkpoints, and test-error counting.
+`common.py` holds everything the two scripts share: data loading, jitter, the `MLP` class, config parsing, the optimizer of [5], the training loop with W&B logging, evaluation, and saving and loading checkpoints.
