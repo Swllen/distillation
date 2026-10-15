@@ -44,10 +44,17 @@ torch = { index = "pytorch-cu126" }
 | `speedup` | Adam, T = 0.1, 3000 steps, log x-axis, raw and with the distillation x-axis rescaled by 1/‖p‖₂ (blog fig. 2) | `results/speedup.png` |
 | `sgd` | SGD, T ∈ {1, 0.1, 0.01}, 3000 steps (blog fig. 3) | `results/sgd_temp.png` |
 | `sweep` | Adam over 9 temperatures: measured burn-in speedup vs predicted 1/‖p‖₂ | `results/sweep.png` |
+| `batch` | The `sweep` repeated for batch sizes 1, 8, 32, 128, 512 (change them with `--batch-sizes`) | `results/batch_sweep.png` |
+
+`all` runs all five experiments. On an RTX PRO 6000 the first four together take about 30 seconds; `batch` adds about 2–3 minutes, since it runs 90 training runs with an eval at every step.
+
+**SGD learning rate.** The `sgd` experiment uses `--sgd-lr`, which defaults to the same value as `--lr` (1e-2). At 1e-2, SGD descends much more slowly than in the blog's figure: at T = 0.1 over 3000 steps, the loss goes from 6.9 to 6.1 here and from about 6.5 to about 4.3 in the blog. The blog probably used a larger SGD lr; try `uv run run_experiments.py sgd --sgd-lr 0.1 --out results_sgd0.1`. The conclusion that SGD gives no speedup does not depend on this.
+
+**Why `batch`.** With batch size 128, the measured speedup in `sweep` is consistently below 1/‖p‖₂ (9.5 vs 26.6 at T = 1, 1.41 vs 1.85 at T = 0.1). The blog's argument is per sample. A larger batch averages away part of the label noise in the regular gradient, which shrinks Adam's √v and makes regular training faster than `lr·‖p‖₂`. If that is the cause, the measured speedup should move toward 1/‖p‖₂ as B gets smaller. With B = 1 the curves are very noisy, so a single seed can be off, and a run that never reaches the threshold within 3000 steps is recorded as NaN.
 
 Every figure is saved as a `.png` plus a `.json` file with the raw curves. Each figure also has an `*_eval.png` version, which plots the clean soft-CE loss against the teacher on a fixed held-out set of 8192 points. That curve has no label-sampling noise and puts both methods on the same scale. The main figures plot the training loss, as the blog does.
 
-The measured speedup in `sweep` is `steps_regular / steps_distill`, where each count is the number of steps the eval loss needs to close 50% of the gap between its initial value and the teacher entropy.
+The measured speedup in `sweep` and `batch` is `steps_regular / steps_distill`, where each count is the number of steps the eval loss needs to close 50% of the gap between its initial value and the teacher entropy.
 
 ## Files
 
