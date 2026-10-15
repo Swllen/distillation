@@ -7,9 +7,9 @@ Experiments
   sweep   : Adam, many T; measured burn-in speedup vs predicted 1/||p||_2 ("Verify")
   batch   : the sweep repeated for batch sizes 1, 8, 32, 128, 512
 
-Usage
-  python run_experiments.py all
-  python run_experiments.py temp speedup --batch-size 64 --lr 1e-2
+Usage (from the repository root)
+  uv run toy_distillation/run_experiments.py all
+  uv run toy_distillation/run_experiments.py temp speedup --batch-size 64 --lr 1e-2
 """
 
 from __future__ import annotations
@@ -192,7 +192,8 @@ def main():
     ap.add_argument("--student-seed", type=int, default=1)
     ap.add_argument("--data-seed", type=int, default=2)
     ap.add_argument("--device", default=None)
-    ap.add_argument("--out", default="results")
+    ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"),
+                    help="output directory (default: results/ next to this script)")
     args = ap.parse_args()
 
     base = Config(lr=args.lr, batch_size=args.batch_size, vocab=args.vocab, d_in=args.d_in,
