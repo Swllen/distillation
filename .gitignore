@@ -5,3 +5,5 @@ results*/
 .venv/
 mnist/data/
 mnist/checkpoints/
+mnist/configs/*
+!mnist/configs/teacher.toml
