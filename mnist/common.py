@@ -44,11 +44,11 @@ def jitter(x: torch.Tensor, max_shift: int = 2) -> torch.Tensor:
 
 
 class MLP(nn.Module):
-    def __init__(self, hidden: int, p_in: float = 0.0, p_hidden: float = 0.0):
+    def __init__(self, hidden: int, p_in: float = 0.0, p_hidden: float = 0.0, bias: bool = True):
         super().__init__()
-        self.fc1 = nn.Linear(784, hidden)
-        self.fc2 = nn.Linear(hidden, hidden)
-        self.fc3 = nn.Linear(hidden, 10)
+        self.fc1 = nn.Linear(784, hidden, bias=bias)
+        self.fc2 = nn.Linear(hidden, hidden, bias=bias)
+        self.fc3 = nn.Linear(hidden, 10, bias=bias)
         self.drop_in = nn.Dropout(p_in)
         self.drop_hidden = nn.Dropout(p_hidden)
 

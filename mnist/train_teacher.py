@@ -9,24 +9,24 @@ The paper gives no training hyperparameters, so they are taken from its referenc
 Hinton et al. (2012), "Improving neural networks by preventing co-adaptation of
 feature detectors", Appendix A (MNIST): https://arxiv.org/abs/1207.0580
 
-  * dropout 0.2 on the input pixels and 0.5 on every hidden unit
-  * max-norm: each hidden unit's incoming weight vector has squared length <= 15
-  * minibatch 100, cross-entropy averaged over the minibatch, 3000 epochs
-  * update  dw_t = p_t dw_{t-1} - (1 - p_t) eps_t <grad>,  w_t = w_{t-1} + dw_t
-    with eps_t = 10 * 0.998^t and p_t rising linearly from 0.5 to 0.99 over
-    the first 500 epochs, then 0.99 (t counts epochs from 0)
-  * weights initialized from N(0, 0.01^2); no weight decay
+  update  dw_t = p_t dw_{t-1} - (1 - p_t) eps_t <grad>,  w_t = w_{t-1} + dw_t
+  with eps_t = lr * lr_decay^t and p_t rising linearly from momentum_initial to
+  momentum_final over the first momentum_epochs epochs (t counts epochs from 0),
+  then a max-norm projection of every hidden unit's incoming weight vector.
 
-Not stated in either paper, chosen here: biases start at 0, and the jitter shift
-(dy, dx) is drawn uniformly from {-2, ..., 2}^2 for every image at every epoch.
+All settings live in a TOML file (default: configs/teacher.toml); see that file for
+what each one means and where its value comes from. Any setting can also be given on
+the command line, which takes precedence over the file:
+
+  uv run mnist/train_teacher.py --config mnist/configs/teacher.toml --lr 1 --no-bias
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import time
+import tomllib
 from pathlib import Path
 
 import torch
@@ -36,6 +36,48 @@ import torch.nn.functional as F
 from common import MLP, jitter, load_mnist, test_errors
 
 HERE = Path(__file__).resolve().parent
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--config", type=Path, default=HERE / "configs" / "teacher.toml")
+    p.add_argument("--out", type=Path, help="checkpoint path; default checkpoints/<config name>.pt")
+    p.add_argument("--device", help="default: cuda if available, else cpu")
+    # Every setting below defaults to None and is filled in from the config file.
+    p.add_argument("--hidden", type=int)
+    p.add_argument("--bias", action=argparse.BooleanOptionalAction)
+    p.add_argument("--p-in", type=float)
+    p.add_argument("--p-hidden", type=float)
+    p.add_argument("--max-norm", type=float)
+    p.add_argument("--jitter", type=int)
+    p.add_argument("--init-std", type=float)
+    p.add_argument("--epochs", type=int)
+    p.add_argument("--batch-size", type=int)
+    p.add_argument("--lr", type=float)
+    p.add_argument("--lr-decay", type=float)
+    p.add_argument("--momentum-initial", type=float)
+    p.add_argument("--momentum-final", type=float)
+    p.add_argument("--momentum-epochs", type=int)
+    p.add_argument("--seed", type=int)
+    p.add_argument("--eval-every", type=int)
+    args = p.parse_args(argv)
+
+    config = tomllib.loads(args.config.read_text(encoding="utf-8"))
+    unknown = sorted(set(config) - set(vars(args)) - {"config"})
+    if unknown:
+        p.error(f"unknown setting(s) in {args.config}: {', '.join(unknown)}")
+    for key, value in config.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+    missing = [k for k, v in vars(args).items() if v is None and k not in ("out", "device")]
+    if missing:
+        p.error(f"missing setting(s), add them to {args.config}: {', '.join(missing)}")
+
+    if args.out is None:
+        args.out = HERE / "checkpoints" / f"{args.config.stem}.pt"
+    if args.device is None:
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
+    return args
 
 
 def lr_at(args: argparse.Namespace, epoch: int) -> float:
@@ -49,36 +91,21 @@ def momentum_at(args: argparse.Namespace, epoch: int) -> float:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--hidden", type=int, default=1200)
-    p.add_argument("--p-in", type=float, default=0.2, help="dropout on the input pixels")
-    p.add_argument("--p-hidden", type=float, default=0.5, help="dropout on the hidden units")
-    p.add_argument("--max-norm", type=float, default=math.sqrt(15), help="max L2 norm of a hidden unit's incoming weights; 0 disables")
-    p.add_argument("--jitter", type=int, default=2, help="max shift in pixels; 0 disables")
-    p.add_argument("--init-std", type=float, default=0.01, help="std of the normal weight init")
-    p.add_argument("--epochs", type=int, default=3000)
-    p.add_argument("--batch-size", type=int, default=100)
-    p.add_argument("--lr", type=float, default=10.0, help="eps_0 in the update rule above")
-    p.add_argument("--lr-decay", type=float, default=0.998, help="eps is multiplied by this after every epoch")
-    p.add_argument("--momentum-initial", type=float, default=0.5)
-    p.add_argument("--momentum-final", type=float, default=0.99)
-    p.add_argument("--momentum-epochs", type=int, default=500, help="epochs over which momentum ramps up linearly")
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--eval-every", type=int, default=25, help="epochs between test evaluations")
-    p.add_argument("--out", type=Path, default=HERE / "checkpoints" / "teacher.pt")
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    args = p.parse_args()
+    args = parse_args()
+    config = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
+    print(json.dumps(config, indent=2))
 
     torch.manual_seed(args.seed)
     x_train, y_train, x_test, y_test = load_mnist(args.device)
     n = len(x_train)
     steps_per_epoch = n // args.batch_size
 
-    model = MLP(args.hidden, args.p_in, args.p_hidden).to(args.device)
+    model = MLP(args.hidden, args.p_in, args.p_hidden, bias=args.bias).to(args.device)
     for m in model.modules():
         if isinstance(m, nn.Linear):
             nn.init.normal_(m.weight, std=args.init_std)
-            nn.init.zeros_(m.bias)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
     params = list(model.parameters())
     deltas = [torch.zeros_like(q) for q in params]
 
@@ -113,7 +140,6 @@ def main() -> None:
             )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    config = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
     torch.save({"state_dict": model.state_dict(), "config": config, "history": history}, args.out)
     args.out.with_suffix(".json").write_text(json.dumps({"config": config, "history": history}, indent=2))
     print(f"final test errors: {history[-1]['test_errors']} / {len(x_test)}  ->  {args.out}")

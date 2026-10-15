@@ -1,0 +1,32 @@
+# Teacher net of Hinton, Vinyals & Dean (2015), Section 3.
+# "paper" = the distillation paper itself; "[5]" = its reference for the training
+# recipe, Hinton et al. (2012), arXiv:1207.0580, Appendix A.
+#
+# Run:        uv run mnist/train_teacher.py --config mnist/configs/teacher.toml
+# Override:   add flags, e.g. --lr 1 --no-bias --epochs 50 (flags beat this file)
+# New setup:  copy this file to a new name and edit the copy. The checkpoint is
+#             saved as mnist/checkpoints/<file name>.pt, so runs do not overwrite each other.
+
+# ---- network ----
+hidden = 1200          # units in each of the two hidden layers (paper)
+bias = true            # biases on every layer; [5] does not say. mdenil/dropout uses none
+p_in = 0.2             # dropout on input pixels ([5])
+p_hidden = 0.5         # dropout on hidden units ([5])
+max_norm = 3.872983346207417   # sqrt(15): squared length of each hidden unit's incoming weights <= 15 ([5]); 0 disables
+init_std = 0.01        # weights ~ N(0, init_std^2), biases 0 ([5])
+
+# ---- data ----
+jitter = 2             # shift each training image by up to this many pixels (paper); 0 disables
+
+# ---- optimization ([5]) ----
+epochs = 3000
+batch_size = 100
+lr = 10.0              # eps_0. NOTE: with bias = true, 10 never trains in our runs; 1.0 does (and mdenil/dropout uses 1.0)
+lr_decay = 0.998       # eps is multiplied by this after every epoch
+momentum_initial = 0.5
+momentum_final = 0.99
+momentum_epochs = 500  # momentum rises linearly from initial to final over this many epochs
+
+# ---- bookkeeping ----
+seed = 0
+eval_every = 25        # epochs between test-set evaluations

@@ -10,7 +10,7 @@ Reproduces the MNIST experiment (Section 3) of Hinton, Vinyals & Dean, [*Distill
 
 ## Teacher
 
-`train_teacher.py` trains the teacher. The paper says only that it is "strongly regularized using dropout and weight-constraints as described in [5]" and that inputs are "jittered by up to two pixels in any direction". It gives no training hyperparameters, so the defaults are those of its reference [5], Hinton et al. (2012), [*Improving neural networks by preventing co-adaptation of feature detectors*](https://arxiv.org/abs/1207.0580), Appendix A:
+`train_teacher.py` trains the teacher. The paper says only that it is "strongly regularized using dropout and weight-constraints as described in [5]" and that inputs are "jittered by up to two pixels in any direction". It gives no training hyperparameters, so the settings in `configs/teacher.toml` are those of its reference [5], Hinton et al. (2012), [*Improving neural networks by preventing co-adaptation of feature detectors*](https://arxiv.org/abs/1207.0580), Appendix A:
 
 | Setting | Value | Source |
 |---|---|---|
@@ -27,16 +27,29 @@ Reproduces the MNIST experiment (Section 3) of Hinton, Vinyals & Dean, [*Distill
 
 In PyTorch's momentum convention this is a learning rate of (1 − pₜ) εₜ: 5.0 at the start, 0.037 at epoch 500 and 0.0002 at the end. Not stated in either paper: the bias init and the jitter distribution (uniform over integer shifts, resampled every epoch).
 
-All of these can be changed with flags (`--help`). The whole dataset is kept as tensors on the device, so there is no DataLoader. MNIST is downloaded to `mnist/data/` on first run.
+The whole dataset is kept as tensors on the device, so there is no DataLoader. MNIST is downloaded to `mnist/data/` on first run.
 
-Run from the repository root:
+### Results so far
+
+| Run | Test errors |
+|---|---|
+| [5] recipe as written (ε₀ = 10, with biases) | never trains: ~9000 errors, loss stays at ln 10 from epoch 1 |
+| same with ε₀ = 1, 50 epochs | 249 |
+
+With ε₀ = 10 the hidden layers stop contributing within the first steps: runs with `init_std` 0.01 and 0.1 give bit-identical results, so the output depends only on the output biases. The widely used reimplementation [mdenil/dropout](https://github.com/mdenil/dropout) follows [5] except that it uses ε₀ = 1.0 and no biases.
+
+### Config files
+
+All settings live in a TOML file, [`configs/teacher.toml`](configs/teacher.toml), which says what each one means and where its value comes from. To try other settings, copy the file under a new name and edit the copy, so that `git pull` never conflicts with your edits. The checkpoint is named after the config file, so runs do not overwrite each other. Any setting can also be overridden on the command line, and flags take precedence over the file. Run from the repository root:
 
 ```bash
 uv sync
-uv run mnist/train_teacher.py
+uv run mnist/train_teacher.py                                        # configs/teacher.toml
+uv run mnist/train_teacher.py --config mnist/configs/my_run.toml     # your own copy
+uv run mnist/train_teacher.py --lr 1 --no-bias --epochs 50           # quick override
 ```
 
-The checkpoint goes to `mnist/checkpoints/teacher.pt` (`state_dict`, `config`, `history`), and the config and test-error curve go to `mnist/checkpoints/teacher.json`. A GPU is used when one is available. On the server GPU one epoch takes about 0.3 s, so 3000 epochs take roughly 15 minutes; on a 12-thread CPU an epoch takes about 10 s.
+A run with `configs/X.toml` writes `mnist/checkpoints/X.pt` (`state_dict`, `config`, `history`) and `mnist/checkpoints/X.json` (config and test-error curve); `--out` changes the path. The resolved config is printed at the start of every run. A GPU is used when one is available. On the server GPU one epoch takes about 0.3 s, so 3000 epochs take roughly 15 minutes; on a 12-thread CPU an epoch takes about 10 s.
 
 An earlier, shorter recipe (SGD lr 0.1, momentum 0.9, cosine decay, max-norm 3.5, PyTorch default init, 200 epochs) reached 108 test errors.
 
