@@ -11,3 +11,15 @@ Experiments on knowledge distillation. Each project lives in its own folder; the
 uv sync
 uv run toy_distillation/run_experiments.py all
 ```
+
+## Syncing to a server
+
+Repository: <https://github.com/Swllen/distillation> (private, so the server needs GitHub access, e.g. `gh auth login` or an SSH key added to the account).
+
+```bash
+git clone https://github.com/Swllen/distillation.git   # first time
+cd distillation && uv sync
+git pull                                                # later updates
+```
+
+With an SSH key, use `git@github.com:Swllen/distillation.git` instead.
