@@ -56,4 +56,39 @@ A run with `configs/X.toml` writes `mnist/checkpoints/X.pt` (`state_dict`, `conf
 
 An earlier, shorter recipe (SGD lr 0.1, momentum 0.9, cosine decay, max-norm 3.5, PyTorch default init, 200 epochs) reached 108 test errors.
 
-`common.py` holds the parts the student and distillation scripts will share: data loading, jitter, the `MLP` class, and test-error counting.
+## Students
+
+`train_student.py` trains the 784-800-800-10 student in two ways, each with its own config:
+
+| Config | Targets | Paper test errors |
+|---|---|---|
+| [`configs/student_hard.toml`](configs/student_hard.toml) | true labels only | 146 |
+| [`configs/student_distill.toml`](configs/student_distill.toml) | teacher soft targets at T = 20, plus true labels | 74 |
+
+Distillation loss (paper Section 2), with student logits z and teacher logits v on the same image:
+
+  loss = (1 − hard_weight) · T² · CE(softmax(v/T), softmax(z/T)) + hard_weight · CE(y, softmax(z))
+
+The T² factor keeps the soft-target gradients on the same scale as T changes. The student is evaluated at T = 1. The teacher runs in eval mode (no dropout) on the same minibatch as the student.
+
+| Setting | Value | Source |
+|---|---|---|
+| Architecture | 784-800-800-10, ReLU | paper |
+| Regularization | none: no dropout, no max-norm, no jitter | paper ("no regularization") |
+| Temperature | 20 | paper |
+| hard_weight | 0.1 | not given for MNIST; Section 2 says the hard term should get "a considerably lower weight" |
+| Transfer set | the 60,000 training images, unjittered | not stated; Section 2 says the original training set works well |
+| Optimizer, schedule, init, epochs | same as the 66-error teacher run (ε₀ = 1, 3000 epochs) | not given for the student |
+
+The student runs have no max-norm. With ε₀ = 1 that combination has not been tried yet; if a run diverges, try a smaller `lr`.
+
+```bash
+uv run mnist/train_student.py --config mnist/configs/student_hard.toml
+uv run mnist/train_student.py --config mnist/configs/student_distill.toml
+```
+
+`student_distill.toml` reads the teacher from `mnist/checkpoints/teacher.pt` and prints its test errors before training starts.
+
+## Code
+
+`common.py` holds everything the two scripts share: data loading, jitter, the `MLP` class, config parsing, the optimizer of [5], the training loop, saving and loading checkpoints, and test-error counting.

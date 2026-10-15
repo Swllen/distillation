@@ -1,0 +1,39 @@
+# Distilled student of Hinton, Vinyals & Dean (2015), Section 3: the same 800-800 net,
+# "regularized solely by adding the additional task of matching the soft targets
+# produced by the large net at a temperature of 20, it achieved 74 test errors."
+# "paper" = the distillation paper; "[5]" = Hinton et al. (2012), arXiv:1207.0580.
+# Everything except the targets is identical to student_hard.toml.
+#
+# Run:  uv run mnist/train_student.py --config mnist/configs/student_distill.toml
+#
+# loss = (1 - hard_weight) * T^2 * CE(teacher soft targets at T, student at T)
+#      + hard_weight * CE(true labels, student at T = 1)
+
+# ---- targets ----
+teacher = "checkpoints/teacher.pt"   # relative to mnist/
+temperature = 20.0     # paper
+hard_weight = 0.1      # not given for MNIST; paper Section 2: the hard term gets "a considerably lower weight"
+
+# ---- network: no regularization (paper) ----
+hidden = 800
+bias = true
+p_in = 0.0
+p_hidden = 0.0
+max_norm = 0           # 0 disables
+init_std = 0.01        # weights ~ N(0, init_std^2), biases 0 ([5])
+
+# ---- data ----
+jitter = 0             # the transfer set is the 60,000 training images, unjittered
+
+# ---- optimization: same as the teacher run ----
+epochs = 3000
+batch_size = 100
+lr = 1.0
+lr_decay = 0.998
+momentum_initial = 0.5
+momentum_final = 0.99
+momentum_epochs = 500
+
+# ---- bookkeeping ----
+seed = 0
+eval_every = 25
