@@ -15,14 +15,28 @@ Prediction from the blog: with Adam, distillation speeds up the burn-in stage by
 
 ## Running
 
+The environment is managed with [uv](https://docs.astral.sh/uv/). Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`, and the Python version (3.11) is set in `.python-version`.
+
 ```bash
-pip install -r requirements.txt
-python run_experiments.py all            # every experiment, outputs in results/
-python run_experiments.py temp speedup   # only some of them
-python run_experiments.py all --batch-size 64 --lr 3e-3 --out results_bs64
+uv sync                                         # create .venv and install the locked versions
+uv run run_experiments.py all                   # every experiment, outputs in results/
+uv run run_experiments.py temp speedup          # only some of them
+uv run run_experiments.py all --batch-size 64 --lr 3e-3 --out results_bs64
 ```
 
 The script uses CUDA when it is available and the CPU otherwise. The model is tiny, so the CPU works too.
+
+On Linux, the PyPI `torch` wheel is built against a recent CUDA version. If the server's NVIDIA driver is too old for that build, `torch.cuda.is_available()` returns False and the script falls back to the CPU. To use a specific CUDA build instead, add a PyTorch index to `pyproject.toml` (replace `cu126` with a version your driver supports) and then run `uv lock && uv sync`:
+
+```toml
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+```
 
 | Experiment | What it does | Output |
 |---|---|---|

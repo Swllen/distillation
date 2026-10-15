@@ -1,0 +1,10 @@
+[project]
+name = "toy-distillation"
+version = "0.1.0"
+description = "Reproduction of Ziming Liu, 'A toy model of distillation' (2026)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "matplotlib>=3.5",
+]
