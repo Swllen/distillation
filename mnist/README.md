@@ -35,6 +35,9 @@ The whole dataset is kept as tensors on the device, so there is no DataLoader. M
 |---|---|
 | [5] recipe as written (ε₀ = 10, with biases) | never trains: ~9000 errors, loss stays at ln 10 from epoch 1 |
 | same with ε₀ = 1, 50 epochs | 249 |
+| **ε₀ = 1, max-norm 2, 3000 epochs** (everything else as [5]) | **66** (paper: 67); 62–66 over the last 400 epochs, 13 min on GPU |
+
+The teacher used for distillation is the last row: [5]'s recipe with two changes, ε₀ = 1.0 instead of 10 and an L2 max-norm of 2 instead of √15.
 
 With ε₀ = 10 the hidden layers stop contributing within the first steps: runs with `init_std` 0.01 and 0.1 give bit-identical results, so the output depends only on the output biases. The widely used reimplementation [mdenil/dropout](https://github.com/mdenil/dropout) follows [5] except that it uses ε₀ = 1.0 and no biases.
 
