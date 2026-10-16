@@ -7,19 +7,3 @@ Experiments on knowledge distillation. Each project lives in its own folder; the
 | [`toy_distillation/`](toy_distillation/README.md) | Reproduction of Ziming Liu, [*A toy model of distillation*](https://kindxiaoming.github.io/blog/2026/distillation/) (2026) |
 | [`mnist/`](mnist/README.md) | MNIST experiment of Hinton, Vinyals & Dean, [*Distilling the Knowledge in a Neural Network*](https://arxiv.org/abs/1503.02531) (2015) |
 
-```bash
-uv sync
-uv run toy_distillation/run_experiments.py all
-```
-
-## Syncing to a server
-
-Repository: <https://github.com/Swllen/distillation> (private, so the server needs GitHub access, e.g. `gh auth login` or an SSH key added to the account).
-
-```bash
-git clone https://github.com/Swllen/distillation.git   # first time
-cd distillation && uv sync
-git pull                                                # later updates
-```
-
-With an SSH key, use `git@github.com:Swllen/distillation.git` instead.
