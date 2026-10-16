@@ -152,10 +152,22 @@ def add_training_args(p: argparse.ArgumentParser, default_config: Path) -> None:
     p.add_argument("--wandb-project", help=f"default {OPTIONAL['wandb_project']}")
     p.add_argument("--wandb-entity", help="W&B user or team; default your own account")
     p.add_argument("--name", help="W&B run name; default the config file name")
+    p.add_argument("--optimizer", choices=("momentum", "adam"), help="momentum: the update of [5] (default); adam: torch.optim.Adam")
+    p.add_argument("--adam-beta1", type=float)
+    p.add_argument("--adam-beta2", type=float)
 
 
 # Settings with a default, so config files written before they existed keep working.
-OPTIONAL = {"log_every": 100, "wandb": True, "wandb_project": "distillation-mnist", "wandb_entity": "", "name": ""}
+OPTIONAL = {
+    "log_every": 100,
+    "wandb": True,
+    "wandb_project": "distillation-mnist",
+    "wandb_entity": "",
+    "name": "",
+    "optimizer": "momentum",
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.999,
+}
 
 
 def parse_args(p: argparse.ArgumentParser, argv: list[str] | None = None) -> argparse.Namespace:
@@ -229,21 +241,30 @@ LossFn = Callable[[torch.Tensor, torch.Tensor, torch.Tensor], dict[str, torch.Te
 
 
 def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], loss_fn: LossFn, run) -> list[dict]:
-    """Train with the optimizer of [5] and return the evaluation history.
+    """Train and return the evaluation history.
 
-    Every step: jitter the minibatch, compute the loss terms, then
-      dw_t = p_t dw_{t-1} - (1 - p_t) eps_t <grad>,  w_t = w_{t-1} + dw_t,
-    then project each hidden unit's incoming weights onto the max-norm ball.
+    Every step: jitter the minibatch, compute the loss terms, take one optimizer step,
+    then project each hidden unit's incoming weights onto the max-norm ball. The
+    learning rate is eps_t = lr * lr_decay^t (t = epoch) for both optimizers.
+      optimizer = "momentum":  the update of [5],
+          dw_t = p_t dw_{t-1} - (1 - p_t) eps_t <grad>,  w_t = w_{t-1} + dw_t,
+          with momentum p_t ramped from momentum_initial to momentum_final
+      optimizer = "adam":      torch.optim.Adam with betas (adam_beta1, adam_beta2);
+          the momentum_* settings are ignored
 
     Logged to W&B: the loss terms and gradient norm averaged over every log_every steps,
-    the learning rate and momentum, and every eval_every epochs the train and test errors
+    the learning rate (and momentum), and every eval_every epochs the train and test errors
     and loss, the fraction of dead hidden units, and the hidden-unit weight norms.
     """
     x_train, y_train, x_test, y_test = data
     n = len(x_train)
     steps_per_epoch = n // args.batch_size
     params = list(model.parameters())
-    deltas = [torch.zeros_like(q) for q in params]
+    adam = args.optimizer == "adam"
+    if adam:
+        opt = torch.optim.Adam(params, lr=args.lr, betas=(args.adam_beta1, args.adam_beta2))
+    else:
+        deltas = [torch.zeros_like(q) for q in params]
 
     print(f"device={args.device}  params={sum(q.numel() for q in params):,}  steps={args.epochs * steps_per_epoch:,}")
     run.summary["params"] = sum(q.numel() for q in params)
@@ -253,6 +274,9 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
     window = 0
     for epoch in range(args.epochs):
         eps, mom = lr_at(args, epoch), momentum_at(args, epoch)
+        if adam:
+            for group in opt.param_groups:
+                group["lr"] = eps
         model.train()
         perm = torch.randperm(n, device=args.device)
         epoch_loss = torch.zeros((), device=args.device)
@@ -263,9 +287,14 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
             grads = torch.autograd.grad(terms["loss"], params)
             with torch.no_grad():
                 terms["grad_norm"] = torch.linalg.vector_norm(torch.stack(torch._foreach_norm(grads)))
-                torch._foreach_mul_(deltas, mom)
-                torch._foreach_add_(deltas, grads, alpha=-(1 - mom) * eps)
-                torch._foreach_add_(params, deltas)
+                if adam:
+                    for q, g in zip(params, grads):
+                        q.grad = g
+                    opt.step()
+                else:
+                    torch._foreach_mul_(deltas, mom)
+                    torch._foreach_add_(deltas, grads, alpha=-(1 - mom) * eps)
+                    torch._foreach_add_(params, deltas)
             if args.max_norm > 0:
                 model.apply_max_norm(args.max_norm)
 
@@ -276,7 +305,9 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
             step = epoch * steps_per_epoch + i + 1
             if step % args.log_every == 0:
                 log = {f"train/{k}": (v / window).item() for k, v in sums.items()}
-                log.update({"epoch": step / steps_per_epoch, "optim/lr": eps, "optim/effective_lr": (1 - mom) * eps, "optim/momentum": mom})
+                log.update({"epoch": step / steps_per_epoch, "optim/lr": eps})
+                if not adam:
+                    log.update({"optim/effective_lr": (1 - mom) * eps, "optim/momentum": mom})
                 run.log(log, step=step)
                 sums.clear()
                 window = 0
@@ -292,9 +323,9 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
             log.update({"train/errors": train_eval["errors"], "train/eval_loss": train_eval["loss"]})
             log.update({f"weights/{k}": v for k, v in weight_stats(model, args.max_norm).items()})
             run.log(log, step=done * steps_per_epoch)
+            optim_info = f"lr {eps:.2e}" if adam else f"eps {eps:.4f}  momentum {mom:.3f}"
             print(
-                f"epoch {done:4d}  loss {mean_loss:.4f}  test errors {test['errors']:4d}  "
-                f"eps {eps:.4f}  momentum {mom:.3f}  {time.time() - start:.0f}s",
+                f"epoch {done:4d}  loss {mean_loss:.4f}  test errors {test['errors']:4d}  {optim_info}  {time.time() - start:.0f}s",
                 flush=True,
             )
     return history

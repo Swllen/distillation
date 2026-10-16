@@ -91,6 +91,27 @@ The distillation loss contains the teacher's entropy H(softmax(v/T)), which the 
 
 `student_distill.toml` reads the teacher from `mnist/checkpoints/teacher.pt` and prints its test errors before training starts.
 
+## Optimizer
+
+Both scripts use the momentum update of [5] by default. Set `optimizer = "adam"` in a config file (or pass `--optimizer adam`) to use `torch.optim.Adam` instead:
+
+| Setting | `momentum` (default) | `adam` |
+|---|---|---|
+| Update | Δw = pΔw − (1 − p) ε g | Adam with betas (`adam_beta1`, `adam_beta2`), default (0.9, 0.999) |
+| `lr` | ε₀; 1 for the teacher, 0.1 for the students | Adam's learning rate, typically around 1e-3; the momentum values would diverge |
+| `lr_decay` | ε multiplied by it every epoch | same |
+| `momentum_initial/final/epochs` | momentum ramp | ignored |
+| max-norm, dropout, jitter | applied | applied |
+
+For example, add these lines to a copy of a config:
+
+```toml
+optimizer = "adam"
+lr = 1e-3
+```
+
+These settings are optional, so config files without them keep using the momentum update.
+
 ## Dashboard (Weights & Biases)
 
 Every run of `train_teacher.py` and `train_student.py` logs to [Weights & Biases](https://wandb.ai), project `distillation-mnist`. The run is named after the config file (`--name` changes it), and its full config, including command-line overrides, is stored with it. One-time setup on each machine:
