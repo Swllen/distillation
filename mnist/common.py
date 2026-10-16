@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 import tomllib
 from collections.abc import Callable
@@ -155,6 +156,8 @@ def add_training_args(p: argparse.ArgumentParser, default_config: Path) -> None:
     p.add_argument("--optimizer", choices=("momentum", "adam"), help="momentum: the update of [5] (default); adam: torch.optim.Adam")
     p.add_argument("--adam-beta1", type=float)
     p.add_argument("--adam-beta2", type=float)
+    p.add_argument("--lr-schedule", choices=("exponential", "cosine"), help="exponential: lr * lr_decay^epoch (default); cosine: anneal lr -> lr_min")
+    p.add_argument("--lr-min", type=float, help="final learning rate of the cosine schedule (default 0)")
 
 
 # Settings with a default, so config files written before they existed keep working.
@@ -167,6 +170,8 @@ OPTIONAL = {
     "optimizer": "momentum",
     "adam_beta1": 0.9,
     "adam_beta2": 0.999,
+    "lr_schedule": "exponential",
+    "lr_min": 0.0,
 }
 
 
@@ -209,6 +214,9 @@ def make_model(args: argparse.Namespace) -> MLP:
 
 
 def lr_at(args: argparse.Namespace, epoch: int) -> float:
+    """Learning rate for an epoch (counted from 0); constant within the epoch."""
+    if args.lr_schedule == "cosine":
+        return args.lr_min + 0.5 * (args.lr - args.lr_min) * (1 + math.cos(math.pi * epoch / args.epochs))
     return args.lr * args.lr_decay**epoch
 
 
@@ -245,7 +253,8 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
 
     Every step: jitter the minibatch, compute the loss terms, take one optimizer step,
     then project each hidden unit's incoming weights onto the max-norm ball. The
-    learning rate is eps_t = lr * lr_decay^t (t = epoch) for both optimizers.
+    learning rate eps_t comes from lr_at: lr * lr_decay^t, or with lr_schedule = "cosine"
+    lr_min + (lr - lr_min) (1 + cos(pi t / epochs)) / 2  (t = epoch), for both optimizers.
       optimizer = "momentum":  the update of [5],
           dw_t = p_t dw_{t-1} - (1 - p_t) eps_t <grad>,  w_t = w_{t-1} + dw_t,
           with momentum p_t ramped from momentum_initial to momentum_final

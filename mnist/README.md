@@ -112,6 +112,21 @@ lr = 1e-3
 
 These settings are optional, so config files without them keep using the momentum update.
 
+### Learning-rate schedule
+
+| `lr_schedule` | Learning rate at epoch t (from 0) | Uses |
+|---|---|---|
+| `"exponential"` (default, [5]) | lr · lr_decay^t | `lr`, `lr_decay` |
+| `"cosine"` (cosine annealing) | lr_min + (lr − lr_min) · (1 + cos(π t / epochs)) / 2 | `lr`, `lr_min` (default 0), `epochs` |
+
+The rate changes once per epoch and works with either optimizer. For example, Adam with cosine annealing from 1e-3 to 0:
+
+```toml
+optimizer = "adam"
+lr = 1e-3
+lr_schedule = "cosine"
+```
+
 ## Dashboard (Weights & Biases)
 
 Every run of `train_teacher.py` and `train_student.py` logs to [Weights & Biases](https://wandb.ai), project `distillation-mnist`. The run is named after the config file (`--name` changes it), and its full config, including command-line overrides, is stored with it. One-time setup on each machine:
