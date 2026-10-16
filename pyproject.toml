@@ -1,7 +1,7 @@
 [project]
-name = "toy-distillation"
+name = "distillation"
 version = "0.1.0"
-description = "Reproduction of Ziming Liu, 'A toy model of distillation' (2026)"
+description = "Knowledge distillation experiments: a toy model (Liu, 2026) and MNIST (Hinton, Vinyals & Dean, 2015)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
