@@ -12,7 +12,7 @@ hidden = 1200          # units in each of the two hidden layers (paper)
 bias = true            # biases on every layer; [5] does not say. mdenil/dropout uses none
 p_in = 0.2             # dropout on input pixels ([5])
 p_hidden = 0.5         # dropout on hidden units ([5])
-max_norm = 3.872983346207417   # sqrt(15): squared length of each hidden unit's incoming weights <= 15 ([5]); 0 disables
+max_norm = 2.0         # L2 norm of each hidden unit's incoming weights <= this; [5] uses sqrt(15) ~ 3.87; 0 disables
 init_std = 0.01        # weights ~ N(0, init_std^2), biases 0 ([5])
 
 # ---- data ----
@@ -21,7 +21,7 @@ jitter = 2             # shift each training image by up to this many pixels (pa
 # ---- optimization ([5]) ----
 epochs = 3000
 batch_size = 100
-lr = 10.0              # eps_0. NOTE: with bias = true, 10 never trains in our runs; 1.0 does (and mdenil/dropout uses 1.0)
+lr = 1.0              # eps_0; [5] uses 10, which does not train here (the hidden layers die in the first steps)
 lr_decay = 0.998       # eps is multiplied by this after every epoch
 momentum_initial = 0.5
 momentum_final = 0.99

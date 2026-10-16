@@ -1,8 +1,8 @@
 # Student baseline of Hinton, Vinyals & Dean (2015), Section 3: "two hidden layers
 # of 800 rectified linear hidden units and no regularization achieved 146 errors".
 # "paper" = the distillation paper; "[5]" = Hinton et al. (2012), arXiv:1207.0580.
-# The paper gives no optimizer settings for the student; they are the same as the
-# teacher run that reached 66 errors, so that only the targets differ between runs.
+# The paper gives no optimizer settings for the student; they are those of the
+# teacher, with a smaller lr, and identical in both student configs.
 #
 # Run:  uv run mnist/train_student.py --config mnist/configs/student_hard.toml
 
@@ -22,10 +22,10 @@ init_std = 0.01        # weights ~ N(0, init_std^2), biases 0 ([5])
 # ---- data ----
 jitter = 0             # no jitter: the paper calls the student unregularized
 
-# ---- optimization: same as the teacher run ----
+# ---- optimization: same as the teacher, except lr ----
 epochs = 3000
 batch_size = 100
-lr = 1.0
+lr = 0.1              # 1.0 kills the distilled student; both students use the same value
 lr_decay = 0.998
 momentum_initial = 0.5
 momentum_final = 0.99

@@ -25,10 +25,10 @@ init_std = 0.01        # weights ~ N(0, init_std^2), biases 0 ([5])
 # ---- data ----
 jitter = 0             # the transfer set is the 60,000 training images, unjittered
 
-# ---- optimization: same as the teacher run ----
+# ---- optimization: same as the teacher, except lr ----
 epochs = 3000
 batch_size = 100
-lr = 1.0
+lr = 0.1              # 1.0 kills the distilled student; both students use the same value
 lr_decay = 0.998
 momentum_initial = 0.5
 momentum_final = 0.99

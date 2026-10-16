@@ -48,84 +48,21 @@ where z are the student's logits and v the teacher's.
 
 ## Usage
 
-Run everything from the repository root.
-
-### Setup
+Run from the repository root.
 
 ```bash
 uv sync
-uv run wandb login          # optional: API key from https://wandb.ai/authorize
-```
-
-### Training
-
-Train the teacher first. The two students are independent of each other and can run at the same time.
-
-```bash
 uv run mnist/train_teacher.py --config mnist/configs/teacher.toml
 uv run mnist/train_student.py --config mnist/configs/student_hard.toml
 uv run mnist/train_student.py --config mnist/configs/student_distill.toml
 ```
 
-Each run prints its resolved settings first, then the test errors every `eval_every` epochs. On a GPU, a 3000-epoch run takes 10–20 minutes.
+Train the teacher first; the two students can run at the same time. A run with `configs/X.toml` saves `mnist/checkpoints/X.pt` and `X.json`. To change a setting, edit a copy of a config file, or pass it as a flag, e.g. `--seed 1`.
 
-### Settings
+Runs log to Weights & Biases (project `distillation-mnist`) after `uv run wandb login`; pass `--no-wandb` to turn this off.
 
-To try other settings, copy a config file under a new name and edit the copy. The tracked files then stay unchanged and `git pull` does not conflict. Any setting can also be given as a flag, which takes precedence over the file:
-
-```bash
-uv run mnist/train_student.py --config mnist/configs/student_distill.toml --temperature 8 --hard-weight 0
-```
-
-These settings are optional and fall back to the defaults below:
-
-| Setting | Default | Other values |
-|---|---|---|
-| `optimizer` | `"momentum"` (the update of [5]) | `"adam"` (`adam_beta1`, `adam_beta2`; use an `lr` around 1e-3) |
-| `lr_schedule` | `"exponential"`: lr · lr_decay^epoch | `"cosine"`: from lr down to `lr_min` (default 0) |
-| `wandb` | `true` | `false`, or `--no-wandb` |
-| `wandb_project`, `wandb_entity`, `name` | `distillation-mnist`, your account, the config file name | |
-| `log_every` | 100 | steps between W&B training logs |
-
-### Outputs and naming
-
-A run with `configs/X.toml` writes these files:
-- `mnist/checkpoints/X.pt`: weights, settings and history;
-- `mnist/checkpoints/X.json`: settings and history.
-
-The W&B run is also named `X`. Running the same config again overwrites its files. To keep both, pass `--out` and `--name`, for example for another seed:
-
-```bash
-uv run mnist/train_student.py --config mnist/configs/student_distill.toml --seed 1 --name student_distill_s1 --out mnist/checkpoints/student_distill_s1.pt
-```
-
-Runs from the same config file share a W&B group, so W&B can show their mean and spread.
-
-### Weights & Biases
-
-Runs log to project `distillation-mnist`:
-
-| Panel | Metrics |
-|---|---|
-| `train/` | loss terms and `grad_norm`; for distillation also `soft_kl`, `soft_ce`, `teacher_entropy` and `hard_ce` |
-| `optim/` | `lr` and `momentum` |
-| `test/` | errors, loss and the fraction of dead hidden units |
-| `train/` (evaluation) | errors and loss on the training set |
-| `weights/` | hidden-unit weight norms |
-
-The x-axis is the epoch.
-
-- Turn logging off with `--no-wandb`.
-- On a machine without network, use `WANDB_MODE=offline uv run ...` and later run `uv run wandb sync wandb/offline-run-*`.
-
-### Notebook
+To run everything in a notebook instead:
 
 ```bash
 uv run --with jupyter jupyter lab mnist/reproduce.ipynb
 ```
-
-`reproduce.ipynb` runs the three trainings from top to bottom with the settings as Python dicts, then shows a results table against the paper and plots of the training curves. It calls the same code as the scripts and does not log to W&B by default.
-
-- `QUICK = True` runs 50 epochs per model, to check that everything works.
-- `REUSE = True` skips runs whose saved results match their settings.
-- Its checkpoints are named `checkpoints/nb_*.pt`.
