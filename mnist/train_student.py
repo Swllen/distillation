@@ -40,7 +40,7 @@ from common import (
     add_training_args,
     args_from_dict,
     config_dict,
-    load_mnist,
+    load_data,
     load_model,
     make_model,
     parse_args,
@@ -93,10 +93,16 @@ def run_student(args: argparse.Namespace) -> list[dict]:
     """Train one student and save it; returns the evaluation history."""
     print(json.dumps(config_dict(args), indent=2))
 
-    # Paper numbers for the 800-800 net: 74 test errors distilled at T = 20, 146 on hard labels.
-    run = start_run(args, job="student", paper_test_errors=(74 if args.temperature == 20 else None) if args.teacher else 146)
+    # Paper numbers for the 800-800 net: 146 test errors on hard labels; distilled at T = 20,
+    # 74, or 206 when all 3s are left out of the transfer set.
+    paper = None
+    if not args.teacher and not args.exclude_digits:
+        paper = 146
+    elif args.teacher and args.temperature == 20:
+        paper = {(): 74, (3,): 206}.get(tuple(args.exclude_digits))
+    run = start_run(args, job="student", paper_test_errors=paper)
     torch.manual_seed(args.seed)
-    data = load_mnist(args.device)
+    data = load_data(args)
     model = make_model(args)
 
     if args.teacher:

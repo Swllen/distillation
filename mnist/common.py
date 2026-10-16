@@ -40,6 +40,17 @@ def load_mnist(device: str | torch.device) -> tuple[torch.Tensor, ...]:
     return tuple(out)
 
 
+def load_data(args) -> tuple[torch.Tensor, ...]:
+    """load_mnist, with the digits in args.exclude_digits removed from the training set
+    (for distillation, the transfer set). The test set stays complete."""
+    x_train, y_train, x_test, y_test = load_mnist(args.device)
+    if args.exclude_digits:
+        keep = ~torch.isin(y_train, torch.tensor(args.exclude_digits, device=y_train.device))
+        x_train, y_train = x_train[keep], y_train[keep]
+        print(f"training set without digits {args.exclude_digits}: {len(x_train)} images")
+    return x_train, y_train, x_test, y_test
+
+
 def jitter(x: torch.Tensor, max_shift: int = 2) -> torch.Tensor:
     """Shift each image in a (B, 28, 28) batch by an independent random (dy, dx) in
     [-max_shift, max_shift], filling the uncovered border with zeros."""
@@ -88,10 +99,12 @@ def test_errors(model: nn.Module, x: torch.Tensor, y: torch.Tensor) -> int:
 
 
 @torch.no_grad()
-def evaluate(model: MLP, x: torch.Tensor, y: torch.Tensor, batch_size: int = 2000) -> dict[str, float]:
-    """Errors, mean cross-entropy and the fraction of dead hidden units (never active on x)."""
+def evaluate(model: MLP, x: torch.Tensor, y: torch.Tensor, batch_size: int = 2000) -> dict:
+    """Errors (in total and per true class), mean cross-entropy and the fraction of dead
+    hidden units (never active on x)."""
     model.eval()
-    errors, loss = 0, 0.0
+    loss = 0.0
+    errors_by_class = torch.zeros(10, dtype=torch.long, device=x.device)
     alive1 = torch.zeros(model.fc1.out_features, dtype=torch.bool, device=x.device)
     alive2 = torch.zeros(model.fc2.out_features, dtype=torch.bool, device=x.device)
     for i in range(0, len(x), batch_size):
@@ -99,12 +112,13 @@ def evaluate(model: MLP, x: torch.Tensor, y: torch.Tensor, batch_size: int = 200
         h2 = F.relu(model.fc2(h1))
         logits = model.fc3(h2)
         yb = y[i : i + batch_size]
-        errors += int((logits.argmax(dim=1) != yb).sum())
+        errors_by_class += torch.bincount(yb[logits.argmax(dim=1) != yb], minlength=10)
         loss += float(F.cross_entropy(logits, yb, reduction="sum"))
         alive1 |= (h1 > 0).any(dim=0)
         alive2 |= (h2 > 0).any(dim=0)
     return {
-        "errors": errors,
+        "errors": int(errors_by_class.sum()),
+        "errors_by_class": errors_by_class.tolist(),
         "loss": loss / len(x),
         "dead_units_fc1": 1 - alive1.float().mean().item(),
         "dead_units_fc2": 1 - alive2.float().mean().item(),
@@ -158,6 +172,7 @@ def add_training_args(p: argparse.ArgumentParser, default_config: Path) -> None:
     p.add_argument("--adam-beta2", type=float)
     p.add_argument("--lr-schedule", choices=("exponential", "cosine"), help="exponential: lr * lr_decay^epoch (default); cosine: anneal lr -> lr_min")
     p.add_argument("--lr-min", type=float, help="final learning rate of the cosine schedule (default 0)")
+    p.add_argument("--exclude-digits", type=int, nargs="*", help="digits removed from the training set, e.g. 3 (default none)")
 
 
 # Settings with a default, so config files written before they existed keep working.
@@ -172,6 +187,7 @@ OPTIONAL = {
     "adam_beta2": 0.999,
     "lr_schedule": "exponential",
     "lr_min": 0.0,
+    "exclude_digits": [],
 }
 
 
@@ -344,6 +360,7 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
         done = epoch + 1
         if done % args.eval_every == 0 or done == args.epochs:
             test = evaluate(model, x_test, y_test)
+            test_by_class = test.pop("errors_by_class")
             train_eval = evaluate(model, x_train, y_train)
             epoch_means = {k: v.item() / steps_per_epoch for k, v in epoch_sums.items()}
             mean_loss = epoch_means["loss"]
@@ -352,15 +369,21 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
             entry.update({"test_errors": test["errors"], "test_loss": test["loss"], "train_errors": train_eval["errors"], "lr": eps})
             if not adam:
                 entry["momentum"] = mom
+            excluded_info = ""
+            if args.exclude_digits:
+                # Test errors on the digits the model never saw in training.
+                entry["test_errors_excluded"] = sum(test_by_class[d] for d in args.exclude_digits)
+                excluded_info = f" ({entry['test_errors_excluded']} on {args.exclude_digits})"
             history.append(entry)
             log = {"epoch": done, "train/epoch_loss": mean_loss, "time/elapsed_s": time.time() - start}
             log.update({f"test/{k}": v for k, v in test.items()})
+            log.update({f"test/errors_on_{d}": test_by_class[d] for d in range(10)})
             log.update({"train/errors": train_eval["errors"], "train/eval_loss": train_eval["loss"]})
             log.update({f"weights/{k}": v for k, v in weight_stats(model, args.max_norm).items()})
             run.log(log, step=done * steps_per_epoch)
             optim_info = f"lr {eps:.2e}" if adam else f"eps {eps:.4f}  momentum {mom:.3f}"
             print(
-                f"epoch {done:4d}  loss {mean_loss:.4f}  test errors {test['errors']:4d}  {optim_info}  {time.time() - start:.0f}s",
+                f"epoch {done:4d}  loss {mean_loss:.4f}  test errors {test['errors']:4d}{excluded_info}  {optim_info}  {time.time() - start:.0f}s",
                 flush=True,
             )
     return history
@@ -373,6 +396,8 @@ def save_run(model: MLP, args: argparse.Namespace, history: list[dict], run) -> 
     args.out.with_suffix(".json").write_text(json.dumps({"config": config, "history": history}, indent=2))
     run.summary["final_test_errors"] = history[-1]["test_errors"]
     run.summary["final_train_errors"] = history[-1]["train_errors"]
+    if "test_errors_excluded" in history[-1]:
+        run.summary["final_test_errors_excluded"] = history[-1]["test_errors_excluded"]
     run.summary["checkpoint"] = str(args.out)
     run.finish()
     print(f"final test errors: {history[-1]['test_errors']} / 10000  ->  {args.out}")

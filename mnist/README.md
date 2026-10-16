@@ -47,6 +47,13 @@ Train the teacher first; the two students can run at the same time. A run with `
 
 Runs log to Weights & Biases (project `distillation-mnist`) after `uv run wandb login`; pass `--no-wandb` to turn this off.
 
+To leave a digit out of the transfer set (paper: no 3s, 206 errors; 109 after raising the 3's bias by 3.5), then try bias shifts on the trained model:
+
+```bash
+uv run mnist/train_student.py --config mnist/configs/student_distill.toml --exclude-digits 3 --name distill_no3 --out mnist/checkpoints/distill_no3.pt
+uv run mnist/shift_bias.py mnist/checkpoints/distill_no3.pt
+```
+
 To run everything in a notebook instead:
 
 ```bash

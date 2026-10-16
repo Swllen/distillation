@@ -36,7 +36,7 @@ from common import (
     add_training_args,
     args_from_dict,
     config_dict,
-    load_mnist,
+    load_data,
     make_model,
     parse_args,
     save_run,
@@ -65,7 +65,7 @@ def run_teacher(args: argparse.Namespace) -> list[dict]:
     print(json.dumps(config_dict(args), indent=2))
     run = start_run(args, job="teacher", paper_test_errors=67)
     torch.manual_seed(args.seed)
-    data = load_mnist(args.device)
+    data = load_data(args)
     model = make_model(args)
     history = train(model, args, data, lambda logits, x, y: {"loss": F.cross_entropy(logits, y)}, run)
     save_run(model, args, history, run)
