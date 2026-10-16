@@ -32,20 +32,6 @@ mnist/
 
 Each run follows the same path: settings → `make_model` → `train` → `save_run`.
 
-`train` does the following every step:
-1. Jitters the minibatch.
-2. Computes the loss terms. The script passes in the loss function.
-3. Takes one optimizer step: either the momentum update of [5], Δw = pΔw − (1 − p)·ε·∇L, or Adam.
-4. Projects each hidden unit's incoming weights onto the max-norm ball.
-
-Every `eval_every` epochs, `train` evaluates on the training and test sets and logs the results.
-
-For distillation, the teacher is loaded in eval mode and computes its logits on the same minibatch as the student. The loss is
-
-  (1 − hard_weight) · T² · CE(softmax(v/T), softmax(z/T)) + hard_weight · CE(y, softmax(z))
-
-where z are the student's logits and v the teacher's.
-
 ## Usage
 
 Run from the repository root.
