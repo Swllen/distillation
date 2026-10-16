@@ -23,6 +23,17 @@ import torch
 from common import load_mnist, load_model, logits_of
 
 
+def shift_errors(logits: torch.Tensor, y: torch.Tensor, digit: int, shifts: list[float]) -> list[tuple[float, int, int]]:
+    """For each shift s added to `digit`'s logit (= its output bias): (s, errors, errors on `digit`)."""
+    rows = []
+    for s in shifts:
+        z = logits.clone()
+        z[:, digit] += s
+        wrong = z.argmax(dim=1) != y
+        rows.append((s, int(wrong.sum()), int((wrong & (y == digit)).sum())))
+    return rows
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("checkpoint", type=Path)
@@ -46,12 +57,7 @@ def main() -> None:
         n_d = int((y_test == d).sum())
         print(f"\nshift added to the bias of class {d}  ({n_d} test images of {d})")
         print(f"{'shift':>6}  {'errors':>6}  {'on ' + str(d):>6}")
-        rows = []
-        for s in shifts:
-            z = logits.clone()
-            z[:, d] += s
-            wrong = z.argmax(dim=1) != y_test
-            rows.append((s, int(wrong.sum()), int((wrong & (y_test == d)).sum())))
+        rows = shift_errors(logits, y_test, d, shifts)
         best = min(rows, key=lambda r: r[1])
         for s, errors, on_d in rows:
             print(f"{s:6.1f}  {errors:6d}  {on_d:6d}{'   <- fewest errors' if (s, errors, on_d) == best else ''}")
