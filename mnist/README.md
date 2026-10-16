@@ -150,6 +150,19 @@ All panels use `epoch` as the x-axis. The run summary holds `final_test_errors`,
 - Sharing: a project is private to your account by default. Either make the project public or invite the viewer under the project's settings on wandb.ai, or put the panels in a W&B Report and share its link.
 - `wandb/` (local run files) is in `.gitignore`.
 
+## Notebook
+
+[`reproduce.ipynb`](reproduce.ipynb) runs the whole experiment from top to bottom: the teacher, both students, a results table against the paper, and plots of the test errors, learning rate, momentum, training loss and soft-target KL. All settings are Python dicts in one cell, with a table of where each value comes from. The notebook calls the same code as the scripts (`train_teacher.run_teacher`, `train_student.run_student`); it does not need config files or W&B.
+
+```bash
+uv sync
+uv run --with jupyter jupyter lab mnist/reproduce.ipynb
+```
+
+- `QUICK = True` runs 50 epochs per model to check the pipeline in a few minutes.
+- `REUSE = True` skips a run whose saved results match its settings, so the plots can be redrawn without retraining.
+- Checkpoints are named `checkpoints/nb_*.pt` (`nb_quick_*` in quick mode), so the notebook never overwrites the command-line runs.
+
 ## Code
 
 `common.py` holds everything the two scripts share: data loading, jitter, the `MLP` class, config parsing, the optimizer of [5], the training loop with W&B logging, evaluation, and saving and loading checkpoints.

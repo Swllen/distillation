@@ -31,21 +31,45 @@ import json
 import torch
 import torch.nn.functional as F
 
-from common import HERE, add_training_args, config_dict, load_mnist, make_model, parse_args, save_run, start_run, train
+from common import (
+    HERE,
+    add_training_args,
+    args_from_dict,
+    config_dict,
+    load_mnist,
+    make_model,
+    parse_args,
+    save_run,
+    start_run,
+    train,
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_training_args(p, HERE / "configs" / "teacher.toml")
+    return p
+
+
+def make_args(settings: dict, name: str, **kwargs) -> argparse.Namespace:
+    """Settings from a dict instead of a config file (used by reproduce.ipynb)."""
+    return args_from_dict(build_parser(), settings, name, **kwargs)
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    add_training_args(p, HERE / "configs" / "teacher.toml")
-    args = parse_args(p)
-    print(json.dumps(config_dict(args), indent=2))
+    run_teacher(parse_args(build_parser()))
 
+
+def run_teacher(args: argparse.Namespace) -> list[dict]:
+    """Train the teacher and save it; returns the evaluation history."""
+    print(json.dumps(config_dict(args), indent=2))
     run = start_run(args, job="teacher", paper_test_errors=67)
     torch.manual_seed(args.seed)
     data = load_mnist(args.device)
     model = make_model(args)
     history = train(model, args, data, lambda logits, x, y: {"loss": F.cross_entropy(logits, y)}, run)
     save_run(model, args, history, run)
+    return history
 
 
 if __name__ == "__main__":

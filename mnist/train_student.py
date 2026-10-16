@@ -38,6 +38,7 @@ import torch.nn.functional as F
 from common import (
     HERE,
     add_training_args,
+    args_from_dict,
     config_dict,
     load_mnist,
     load_model,
@@ -70,13 +71,26 @@ def distillation_loss(
     }
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_training_args(p, HERE / "configs" / "student_distill.toml")
     p.add_argument("--teacher", help='teacher checkpoint, relative paths are under mnist/; "" trains on hard labels only')
     p.add_argument("--temperature", type=float)
     p.add_argument("--hard-weight", type=float, help="weight of the hard-label term, 0..1")
-    args = parse_args(p)
+    return p
+
+
+def make_args(settings: dict, name: str, **kwargs) -> argparse.Namespace:
+    """Settings from a dict instead of a config file (used by reproduce.ipynb)."""
+    return args_from_dict(build_parser(), settings, name, **kwargs)
+
+
+def main() -> None:
+    run_student(parse_args(build_parser()))
+
+
+def run_student(args: argparse.Namespace) -> list[dict]:
+    """Train one student and save it; returns the evaluation history."""
     print(json.dumps(config_dict(args), indent=2))
 
     # Paper numbers for the 800-800 net: 74 test errors distilled at T = 20, 146 on hard labels.
@@ -103,6 +117,7 @@ def main() -> None:
 
     history = train(model, args, data, loss_fn, run)
     save_run(model, args, history, run)
+    return history
 
 
 if __name__ == "__main__":

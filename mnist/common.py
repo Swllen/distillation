@@ -198,6 +198,26 @@ def parse_args(p: argparse.ArgumentParser, argv: list[str] | None = None) -> arg
     return args
 
 
+def args_from_dict(
+    p: argparse.ArgumentParser, settings: dict, name: str, out: Path | None = None, device: str | None = None
+) -> argparse.Namespace:
+    """Like parse_args, but the settings come from a dict instead of a config file; `name`
+    stands in for the config file name (W&B run name and group, default checkpoint name)."""
+    args = p.parse_args([])
+    unknown = sorted(set(settings) - set(vars(args)))
+    if unknown:
+        raise ValueError(f"unknown setting(s): {', '.join(unknown)}")
+    for key, value in {**OPTIONAL, **settings}.items():
+        setattr(args, key, value)
+    missing = [k for k, v in vars(args).items() if v is None and k not in ("out", "device")]
+    if missing:
+        raise ValueError(f"missing setting(s): {', '.join(missing)}")
+    args.config = Path(f"{name}.toml")
+    args.out = Path(out) if out is not None else HERE / "checkpoints" / f"{name}.pt"
+    args.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    return args
+
+
 def config_dict(args: argparse.Namespace) -> dict:
     return {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
 
@@ -288,7 +308,7 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
                 group["lr"] = eps
         model.train()
         perm = torch.randperm(n, device=args.device)
-        epoch_loss = torch.zeros((), device=args.device)
+        epoch_sums: dict[str, torch.Tensor] = {}
         for i in range(steps_per_epoch):
             idx = perm[i * args.batch_size : (i + 1) * args.batch_size]
             x = jitter(x_train[idx], args.jitter)
@@ -309,8 +329,8 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
 
             for k, v in terms.items():
                 sums[k] = sums.get(k, 0) + v.detach()
+                epoch_sums[k] = epoch_sums.get(k, 0) + v.detach()
             window += 1
-            epoch_loss += terms["loss"].detach()
             step = epoch * steps_per_epoch + i + 1
             if step % args.log_every == 0:
                 log = {f"train/{k}": (v / window).item() for k, v in sums.items()}
@@ -325,8 +345,14 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
         if done % args.eval_every == 0 or done == args.epochs:
             test = evaluate(model, x_test, y_test)
             train_eval = evaluate(model, x_train, y_train)
-            mean_loss = epoch_loss.item() / steps_per_epoch
-            history.append({"epoch": done, "train_loss": mean_loss, "test_errors": test["errors"], "train_errors": train_eval["errors"]})
+            epoch_means = {k: v.item() / steps_per_epoch for k, v in epoch_sums.items()}
+            mean_loss = epoch_means["loss"]
+            # Epoch means of every loss term (train_loss, train_soft_kl, ...) plus the eval results.
+            entry = {"epoch": done, **{f"train_{k}": v for k, v in epoch_means.items()}}
+            entry.update({"test_errors": test["errors"], "test_loss": test["loss"], "train_errors": train_eval["errors"], "lr": eps})
+            if not adam:
+                entry["momentum"] = mom
+            history.append(entry)
             log = {"epoch": done, "train/epoch_loss": mean_loss, "time/elapsed_s": time.time() - start}
             log.update({f"test/{k}": v for k, v in test.items()})
             log.update({"train/errors": train_eval["errors"], "train/eval_loss": train_eval["loss"]})
