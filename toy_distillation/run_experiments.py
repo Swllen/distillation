@@ -7,6 +7,7 @@ Experiments
   sweep   : Adam, many T; measured burn-in speedup vs predicted 1/||p||_2 ("Verify")
   batch   : the sweep repeated for batch sizes 1, 8, 32, 128, 512
   optim   : the sweep repeated for SGD, momentum, RMSprop, Adagrad, Adam, Adamax, signSGD
+  losses  : Adam, T in {1, 0.1, 0.01}: regular, distill, swapped CE, reverse KL, teacher-argmax one-hot
 
 Usage (from the repository root)
   uv run toy_distillation/run_experiments.py all
@@ -181,6 +182,49 @@ def exp_batch(base: Config, out: str, batch_sizes=(1, 8, 32, 128, 512), steps=30
     save(fig, out, "batch_sweep", rows)
 
 
+LOSS_STYLES = {
+    "regular": ("tab:blue", "Regular (sampled one-hot)"),
+    "distill": ("tab:orange", "Distill: CE(p, q)"),
+    "swapped": ("tab:green", "Swapped: -Σ q log p"),
+    "reverse_kl": ("tab:purple", "Reverse KL(q || p)"),
+    "teacher_argmax": ("tab:brown", "Teacher argmax one-hot"),
+}
+
+
+def exp_losses(base: Config, out: str, temps=(1.0, 0.1, 0.01), steps=3000):
+    """Compare the soft-target variants: does the swapped CE behave like one-hot training?
+    Rows: forward CE to the teacher, argmax agreement with the teacher, student entropy H(q)."""
+    runs = {}
+    for T in temps:
+        for m in LOSS_STYLES:
+            r = train(replace(base, temperature=T, method=m, steps=steps))
+            runs[(T, m)] = r
+            print(f"[losses T={T:g} {m}] final eval CE={r['eval_loss'][-1]:.4f} "
+                  f"(H={r['entropy']:.4f}) agree={r['eval_acc'][-1]:.3f} H(q)={r['eval_entropy'][-1]:.3f}")
+
+    rows = [("eval_loss", "CE(p, q) (eval)", True), ("eval_acc", "argmax agreement", False),
+            ("eval_entropy", "student entropy H(q)", False)]
+    fig, axes = plt.subplots(len(rows), len(temps), figsize=(6 * len(temps), 3.6 * len(rows)), squeeze=False)
+    for j, T in enumerate(temps):
+        H = runs[(T, "distill")]["entropy"]
+        for i, (key, ylabel, logy) in enumerate(rows):
+            ax = axes[i][j]
+            for m, (color, label) in LOSS_STYLES.items():
+                r = runs[(T, m)]
+                ax.plot(r["eval_steps"][1:], r[key][1:], color=color, lw=1.2, label=label)
+            if key in ("eval_loss", "eval_entropy"):
+                ax.axhline(H, color=C_ENT, ls="--", lw=1, label="Entropy (teacher)")
+            ax.set_xscale("log")
+            if logy:
+                ax.set_yscale("log")
+            ax.set_xlabel("Step"); ax.set_ylabel(ylabel)
+            if i == 0:
+                ax.set_title(f"Teacher temperature = {T:g}")
+    axes[0][0].legend(fontsize=7)
+    fig.suptitle(f"Soft-target variants (Adam, lr={base.lr:g}, batch={base.batch_size})")
+    save(fig, out, "losses", {f"{T:g}/{m}": r for (T, m), r in runs.items()})
+
+
 # Default lr per optimizer, chosen so that each one makes visible progress within 3000 steps.
 # Normalised optimizers move ~lr per coordinate per step; plain SGD moves ~lr * |grad| with
 # |grad| ~ 1/V per row, so it needs a much larger lr. Adagrad's step decays like lr / sqrt(t).
@@ -248,7 +292,7 @@ def exp_optim(base: Config, out: str, optimizers, steps=3000, frac=0.5, curve_T=
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("experiments", nargs="+", choices=["temp", "speedup", "sgd", "sweep", "batch", "optim", "all"])
+    ap.add_argument("experiments", nargs="+", choices=["temp", "speedup", "sgd", "sweep", "batch", "optim", "losses", "all"])
     ap.add_argument("--lr", type=float, default=1e-2)
     ap.add_argument("--sgd-lr", type=float, default=None,
                     help="lr for the SGD experiment (default: same as --lr, i.e. 1e-2). With 1e-2 SGD "
@@ -278,7 +322,7 @@ def main():
     print(f"device={base.device}")
 
     optimizers = parse_optimizers(args.optimizers)
-    exps = ({"temp", "speedup", "sgd", "sweep", "batch", "optim"} if "all" in args.experiments
+    exps = ({"temp", "speedup", "sgd", "sweep", "batch", "optim", "losses"} if "all" in args.experiments
             else set(args.experiments))
     if "temp" in exps:
         exp_temp(base, args.out)
@@ -292,6 +336,8 @@ def main():
         exp_batch(base, args.out, batch_sizes=tuple(args.batch_sizes))
     if "optim" in exps:
         exp_optim(base, args.out, optimizers)
+    if "losses" in exps:
+        exp_losses(base, args.out)
 
 
 if __name__ == "__main__":
