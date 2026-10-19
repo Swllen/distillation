@@ -7,7 +7,7 @@ Experiments
   sweep   : Adam, many T; measured burn-in speedup vs predicted 1/||p||_2 ("Verify")
   batch   : the sweep repeated for batch sizes 1, 8, 32, 128, 512
   optim   : the sweep repeated for SGD, momentum, RMSprop, Adagrad, Adam, Adamax, signSGD
-  losses  : Adam, T in {1, 0.1, 0.01}: regular, distill, swapped CE, reverse KL, teacher-argmax one-hot
+  losses  : Adam, T in {1, 0.1, 0.01}: hard label (regular) vs swapped CE -sum q log p
 
 Usage (from the repository root)
   uv run toy_distillation/run_experiments.py all
@@ -191,12 +191,12 @@ LOSS_STYLES = {
 }
 
 
-def exp_losses(base: Config, out: str, temps=(1.0, 0.1, 0.01), steps=3000):
-    """Compare the soft-target variants: does the swapped CE behave like one-hot training?
+def exp_losses(base: Config, out: str, methods=("regular", "swapped"), temps=(1.0, 0.1, 0.01), steps=3000):
+    """Does the swapped CE behave like one-hot (hard label) training?
     Rows: forward CE to the teacher, argmax agreement with the teacher, student entropy H(q)."""
     runs = {}
     for T in temps:
-        for m in LOSS_STYLES:
+        for m in methods:
             r = train(replace(base, temperature=T, method=m, steps=steps))
             runs[(T, m)] = r
             print(f"[losses T={T:g} {m}] final eval CE={r['eval_loss'][-1]:.4f} "
@@ -206,10 +206,11 @@ def exp_losses(base: Config, out: str, temps=(1.0, 0.1, 0.01), steps=3000):
             ("eval_entropy", "student entropy H(q)", False)]
     fig, axes = plt.subplots(len(rows), len(temps), figsize=(6 * len(temps), 3.6 * len(rows)), squeeze=False)
     for j, T in enumerate(temps):
-        H = runs[(T, "distill")]["entropy"]
+        H = runs[(T, methods[0])]["entropy"]
         for i, (key, ylabel, logy) in enumerate(rows):
             ax = axes[i][j]
-            for m, (color, label) in LOSS_STYLES.items():
+            for m in methods:
+                color, label = LOSS_STYLES[m]
                 r = runs[(T, m)]
                 ax.plot(r["eval_steps"][1:], r[key][1:], color=color, lw=1.2, label=label)
             if key in ("eval_loss", "eval_entropy"):
@@ -221,7 +222,7 @@ def exp_losses(base: Config, out: str, temps=(1.0, 0.1, 0.01), steps=3000):
             if i == 0:
                 ax.set_title(f"Teacher temperature = {T:g}")
     axes[0][0].legend(fontsize=7)
-    fig.suptitle(f"Soft-target variants (Adam, lr={base.lr:g}, batch={base.batch_size})")
+    fig.suptitle(f"Hard label vs swapped CE (Adam, lr={base.lr:g}, batch={base.batch_size})")
     save(fig, out, "losses", {f"{T:g}/{m}": r for (T, m), r in runs.items()})
 
 
@@ -303,6 +304,8 @@ def main():
     ap.add_argument("--optimizers", nargs="+", default=list(OPTIM_LRS),
                     help="optimizers for the 'optim' experiment, each 'name' or 'name:lr' "
                          f"(default lrs: {', '.join(f'{k}={v:g}' for k, v in OPTIM_LRS.items())})")
+    ap.add_argument("--loss-methods", nargs="+", default=["regular", "swapped"], choices=list(LOSS_STYLES),
+                    help="training methods for the 'losses' experiment (default: hard label vs swapped CE)")
     ap.add_argument("--vocab", type=int, default=1000)
     ap.add_argument("--d-in", type=int, default=10)
     ap.add_argument("--teacher-seed", type=int, default=0)
@@ -337,7 +340,7 @@ def main():
     if "optim" in exps:
         exp_optim(base, args.out, optimizers)
     if "losses" in exps:
-        exp_losses(base, args.out)
+        exp_losses(base, args.out, methods=tuple(args.loss_methods))
 
 
 if __name__ == "__main__":

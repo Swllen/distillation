@@ -48,9 +48,9 @@ torch = { index = "pytorch-cu126" }
 | `sweep` | Adam over 9 temperatures: measured burn-in speedup vs predicted 1/‖p‖₂ | `results/sweep.png` |
 | `batch` | The `sweep` repeated for batch sizes 1, 8, 32, 128, 512 (change them with `--batch-sizes`) | `results/batch_sweep.png` |
 | `optim` | The `sweep` repeated for 7 optimizers, plus the eval-loss curves of each at T = 0.1 | `results/optim_sweep.png`, `results/optim_curves.png` |
-| `losses` | Adam, T ∈ {1, 0.1, 0.01}, 3000 steps: regular, distill, swapped CE, reverse KL and teacher-argmax one-hot | `results/losses.png` |
+| `losses` | Adam, T ∈ {1, 0.1, 0.01}, 3000 steps: hard label (regular) vs swapped CE | `results/losses.png` |
 
-`all` runs all seven experiments. On an RTX PRO 6000 the first four together take about 30 seconds. `batch` adds about 2–3 minutes (90 training runs with an eval at every step), `optim` about 3–4 minutes (126 runs), and `losses` well under a minute (15 runs).
+`all` runs all seven experiments. On an RTX PRO 6000 the first four together take about 30 seconds. `batch` adds about 2–3 minutes (90 training runs with an eval at every step), `optim` about 3–4 minutes (126 runs), and `losses` well under a minute (6 runs).
 
 **Optimizers in `optim`.** The blog's explanation is that Adam divides the update by a running estimate of the gradient scale. Regular training's gradient is mostly label noise, so that scale is large compared with the useful mean gradient, and regular training takes smaller effective steps. That predicts a split between two groups (these are hypotheses for the experiment to test):
 
@@ -72,21 +72,22 @@ uv run toy_distillation/run_experiments.py optim --optimizers sgd:3 momentum:0.3
 
 Each speedup compares regular and distill under the same optimizer and lr. Its value can depend on the lr, so part of any difference between optimizers may come from the chosen lrs.
 
-**Soft-target variants in `losses`.** The question is whether swapping teacher and student in the cross-entropy (`-Σ q log p` instead of `-Σ p log q`) gives the same result as ordinary one-hot training. With q the student and p the teacher (same names as `mnist/train_student.py`):
+**Hard label vs swapped CE in `losses`.** The question is whether swapping teacher and student in the cross-entropy (`-Σ q log p` instead of `-Σ p log q`) gives the same result as ordinary one-hot (hard label) training. With q the student and p the teacher:
 
-| Method | Training loss | Minimum over q | Expected outcome |
-|---|---|---|---|
-| `regular` | CE on a label sampled from p | q = p (in expectation) | learns p, with label noise |
-| `distill` | `-Σ p log q` | q = p | learns p |
-| `swapped` | `-Σ q log p = KL(q‖p) + H(q)` | q = one-hot(argmax p) | collapses onto the teacher's top class |
-| `reverse_kl` | `KL(q‖p)` = swapped − H(q) | q = p | learns p (the student can represent the teacher exactly) |
-| `teacher_argmax` | CE on the label argmax p | q = one-hot(argmax p) | collapses onto the teacher's top class |
+| Method | Training loss | Minimum over q |
+|---|---|---|
+| `regular` (hard label) | CE on a label sampled from p | q = p (in expectation) |
+| `swapped` | `-Σ q log p = KL(q‖p) + H(q)` | q = one-hot(argmax p) |
 
-The swapped loss is linear in q, so it is minimised by putting all of q's mass on the class with the largest log p. Its fixed point is the same as `teacher_argmax` (one-hot on the teacher's argmax), not the same as `regular` (which learns the full distribution p). The gradient path is different, though: the swapped loss's gradient for class k is weighted by q_k, so classes the student already likes get most of the push. The figure has three rows, so the collapse is visible directly:
+The swapped loss is linear in q, so it is minimised by putting all of q's mass on the teacher's top class: the student collapses to one-hot instead of learning p. Its gradient for class k is `q_k·(c_k − Σ q_i c_i)` with `c_i = −log p_i`. Once q is nearly one-hot, every term is close to 0, so a confident wrong prediction is never corrected. The hard-label gradient `q_k − 1[k = y]` always carries an error signal.
 
-- **CE(p, q) on the eval set**: how well q matches the full teacher distribution. For the collapsing methods it should rise again as q becomes one-hot.
-- **argmax agreement**: how often the student's top class equals the teacher's. Collapsing methods should still get this right.
-- **student entropy H(q)**: should approach the teacher entropy (red line) for methods that learn p, and approach 0 for methods that collapse.
+The figure has three rows:
+
+- **CE(p, q) on the eval set**: how well q matches the full teacher distribution. For swapped it rises again as q becomes one-hot.
+- **argmax agreement**: how often the student's top class equals the teacher's.
+- **student entropy H(q)**: approaches the teacher entropy (red line) for hard label and goes towards 0 for swapped.
+
+With the defaults, swapped's argmax agreement stalls at about 0.63 at all three temperatures, while hard label keeps improving and its entropy approaches the teacher's (one seed). The other variants are still available for comparison with `--loss-methods`, for example `--loss-methods regular swapped distill reverse_kl teacher_argmax`.
 
 **SGD learning rate.** The `sgd` experiment uses `--sgd-lr`, which defaults to the same value as `--lr` (1e-2). At 1e-2, SGD descends much more slowly than in the blog's figure: at T = 0.1 over 3000 steps, the loss goes from 6.9 to 6.1 here and from about 6.5 to about 4.3 in the blog. The blog probably used a larger SGD lr; try `uv run toy_distillation/run_experiments.py sgd --sgd-lr 0.1 --out toy_distillation/results_sgd0.1`. The conclusion that SGD gives no speedup does not depend on this.
 
