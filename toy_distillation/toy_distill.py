@@ -28,7 +28,7 @@ class Config:
     vocab: int = 1000
     temperature: float = 1.0
     method: str = "distill"  # "regular" | "distill"
-    optimizer: str = "adam"  # "adam" | "sgd"
+    optimizer: str = "adam"  # a key of OPTIMIZERS
     lr: float = 1e-2
     batch_size: int = 128
     steps: int = 1000
@@ -60,12 +60,37 @@ def make_student(cfg: Config) -> nn.Module:
     return nn.Linear(cfg.d_in, cfg.vocab).to(cfg.device)
 
 
+class SignSGD(torch.optim.Optimizer):
+    """theta -= lr * sign(g): the extreme of per-coordinate normalisation."""
+
+    def __init__(self, params, lr: float):
+        super().__init__(params, dict(lr=lr))
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is not None:
+                    p.add_(p.grad.sign(), alpha=-group["lr"])
+
+
+# Linear in g (no speedup expected): sgd, momentum.
+# Normalised by a running gradient scale (speedup expected): rmsprop, adagrad, adam, adamax, signsgd.
+OPTIMIZERS = {
+    "sgd": lambda params, lr: torch.optim.SGD(params, lr=lr),
+    "momentum": lambda params, lr: torch.optim.SGD(params, lr=lr, momentum=0.9),
+    "rmsprop": lambda params, lr: torch.optim.RMSprop(params, lr=lr),
+    "adagrad": lambda params, lr: torch.optim.Adagrad(params, lr=lr),
+    "adam": lambda params, lr: torch.optim.Adam(params, lr=lr),
+    "adamax": lambda params, lr: torch.optim.Adamax(params, lr=lr),
+    "signsgd": lambda params, lr: SignSGD(params, lr=lr),
+}
+
+
 def make_optimizer(cfg: Config, params) -> torch.optim.Optimizer:
-    if cfg.optimizer == "adam":
-        return torch.optim.Adam(params, lr=cfg.lr)
-    if cfg.optimizer == "sgd":
-        return torch.optim.SGD(params, lr=cfg.lr)
-    raise ValueError(f"unknown optimizer {cfg.optimizer}")
+    if cfg.optimizer not in OPTIMIZERS:
+        raise ValueError(f"unknown optimizer {cfg.optimizer}; choose from {sorted(OPTIMIZERS)}")
+    return OPTIMIZERS[cfg.optimizer](params, cfg.lr)
 
 
 def soft_ce(student_logits: torch.Tensor, teacher_probs: torch.Tensor) -> torch.Tensor:

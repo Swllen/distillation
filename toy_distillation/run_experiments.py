@@ -6,6 +6,7 @@ Experiments
   sgd     : SGD,  T in {1, 0.1, 0.01}, 3000 steps                         (blog fig. 3)
   sweep   : Adam, many T; measured burn-in speedup vs predicted 1/||p||_2 ("Verify")
   batch   : the sweep repeated for batch sizes 1, 8, 32, 128, 512
+  optim   : the sweep repeated for SGD, momentum, RMSprop, Adagrad, Adam, Adamax, signSGD
 
 Usage (from the repository root)
   uv run toy_distillation/run_experiments.py all
@@ -105,23 +106,27 @@ def steps_to_reach(steps, losses, target):
 SWEEP_TEMPS = [1.0, 0.5, 0.3, 0.2, 0.1, 0.05, 0.03, 0.02, 0.01]
 
 
-def measure_speedups(base: Config, temps=SWEEP_TEMPS, steps=3000, frac=0.5) -> list[dict]:
-    """Burn-in speedup: steps for the clean eval loss to cover `frac` of the gap
-    between its initial value and the teacher entropy, regular / distill."""
-    rows = []
+def measure_speedups(base: Config, temps=SWEEP_TEMPS, steps=3000, frac=0.5, keep_T=None):
+    """Burn-in speedup with optimizer `base.optimizer`: steps for the clean eval loss to
+    cover `frac` of the gap between its initial value and the teacher entropy, regular / distill.
+
+    Returns the rows, or (rows, (regular, distill)) for temperature `keep_T` if it is given."""
+    rows, kept = [], None
     for T in temps:
-        reg, dis = run_pair(base, optimizer="adam", steps=steps, temperature=T, eval_every=1)
+        reg, dis = run_pair(base, steps=steps, temperature=T, eval_every=1)
+        if T == keep_T:
+            kept = (reg, dis)
         L0, H = dis["eval_loss"][0], dis["entropy"]
         target = H + (1 - frac) * (L0 - H)
         s_reg = steps_to_reach(reg["eval_steps"], reg["eval_loss"], target)
         s_dis = steps_to_reach(dis["eval_steps"], dis["eval_loss"], target)
-        rows.append({"T": T, "batch_size": base.batch_size, "p_norm": dis["p_norm"],
-                     "speedup_pred": dis["speedup_pred"],
+        rows.append({"T": T, "optimizer": base.optimizer, "lr": base.lr, "batch_size": base.batch_size,
+                     "p_norm": dis["p_norm"], "speedup_pred": dis["speedup_pred"],
                      "steps_regular": s_reg, "steps_distill": s_dis,
                      "speedup_measured": s_reg / s_dis if s_dis else math.nan})
-        print(f"  B={base.batch_size} T={T:g}: steps regular={s_reg} distill={s_dis} "
+        print(f"  {base.optimizer} B={base.batch_size} T={T:g}: steps regular={s_reg} distill={s_dis} "
               f"measured={rows[-1]['speedup_measured']:.2f} pred={dis['speedup_pred']:.2f}")
-    return rows
+    return rows if keep_T is None else (rows, kept)
 
 
 def exp_sweep(base: Config, out: str, steps=3000, frac=0.5):
@@ -176,9 +181,74 @@ def exp_batch(base: Config, out: str, batch_sizes=(1, 8, 32, 128, 512), steps=30
     save(fig, out, "batch_sweep", rows)
 
 
+# Default lr per optimizer, chosen so that each one makes visible progress within 3000 steps.
+# Normalised optimizers move ~lr per coordinate per step; plain SGD moves ~lr * |grad| with
+# |grad| ~ 1/V per row, so it needs a much larger lr. Adagrad's step decays like lr / sqrt(t).
+OPTIM_LRS = {"sgd": 1.0, "momentum": 0.1, "rmsprop": 1e-2, "adagrad": 1e-1,
+             "adam": 1e-2, "adamax": 1e-2, "signsgd": 1e-2}
+
+
+def parse_optimizers(specs: list[str]) -> list[tuple[str, float]]:
+    """'adam' -> ('adam', OPTIM_LRS['adam']); 'rmsprop:3e-3' -> ('rmsprop', 3e-3)."""
+    out = []
+    for spec in specs:
+        name, _, lr = spec.partition(":")
+        if name not in OPTIM_LRS:
+            raise SystemExit(f"unknown optimizer '{name}'; choose from {list(OPTIM_LRS)}")
+        out.append((name, float(lr) if lr else OPTIM_LRS[name]))
+    return out
+
+
+def exp_optim(base: Config, out: str, optimizers, steps=3000, frac=0.5, curve_T=0.1):
+    """Speedup of distillation over regular training for each optimizer, across temperatures,
+    plus the eval-loss curves of every optimizer at T = curve_T."""
+    rows, curves = [], {}
+    for name, lr in optimizers:
+        r, (reg, dis) = measure_speedups(replace(base, optimizer=name, lr=lr), steps=steps,
+                                         frac=frac, keep_T=curve_T)
+        rows += r
+        curves[name] = {"lr": lr, "regular": reg, "distill": dis}
+
+    colors = dict(zip([n for n, _ in optimizers], plt.cm.tab10.colors))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+    first = [r for r in rows if r["optimizer"] == optimizers[0][0]]
+    axes[0].plot([r["T"] for r in first], [r["speedup_pred"] for r in first],
+                 "k--", lw=1.5, label="predicted 1/||p||_2")
+    finite = [r["speedup_pred"] for r in rows] + [r["speedup_measured"] for r in rows
+                                                 if r["speedup_measured"] == r["speedup_measured"]]
+    lo, hi = min(finite), max(finite)
+    axes[1].plot([lo, hi], [lo, hi], "k--", lw=1)
+    axes[1].axhline(1, color="gray", lw=0.8, ls=":")
+    for name, lr in optimizers:
+        rs = [r for r in rows if r["optimizer"] == name]
+        label = f"{name} (lr={lr:g})"
+        axes[0].plot([r["T"] for r in rs], [r["speedup_measured"] for r in rs], "o-",
+                     color=colors[name], label=label)
+        axes[1].plot([r["speedup_pred"] for r in rs], [r["speedup_measured"] for r in rs], "o-",
+                     color=colors[name], label=label)
+    for ax in axes:
+        ax.set_xscale("log"); ax.set_yscale("log"); ax.legend(fontsize=7)
+    axes[0].set_xlabel("Teacher temperature T"); axes[0].set_ylabel("Speedup (regular steps / distill steps)")
+    axes[1].set_xlabel("predicted 1/||p||_2"); axes[1].set_ylabel("measured speedup")
+    fig.suptitle(f"Burn-in speedup by optimizer (batch={base.batch_size}, {int(frac * 100)}% of gap closed; "
+                 f"NaN = not reached in {steps} steps)")
+    save(fig, out, "optim_sweep", rows)
+
+    ncols = 4
+    nrows = math.ceil(len(optimizers) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 3.6 * nrows), squeeze=False)
+    for ax, (name, lr) in zip(axes.flat, optimizers):
+        c = curves[name]
+        plot_pair(ax, c["regular"], c["distill"], f"{name}, lr={lr:g}", logx=True, use_eval=True)
+    for ax in list(axes.flat)[len(optimizers):]:
+        ax.axis("off")
+    fig.suptitle(f"Eval loss at T = {curve_T:g} by optimizer (batch={base.batch_size})")
+    save(fig, out, "optim_curves", curves)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("experiments", nargs="+", choices=["temp", "speedup", "sgd", "sweep", "batch", "all"])
+    ap.add_argument("experiments", nargs="+", choices=["temp", "speedup", "sgd", "sweep", "batch", "optim", "all"])
     ap.add_argument("--lr", type=float, default=1e-2)
     ap.add_argument("--sgd-lr", type=float, default=None,
                     help="lr for the SGD experiment (default: same as --lr, i.e. 1e-2). With 1e-2 SGD "
@@ -186,6 +256,9 @@ def main():
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--batch-sizes", type=int, nargs="+", default=[1, 8, 32, 128, 512],
                     help="batch sizes for the 'batch' experiment")
+    ap.add_argument("--optimizers", nargs="+", default=list(OPTIM_LRS),
+                    help="optimizers for the 'optim' experiment, each 'name' or 'name:lr' "
+                         f"(default lrs: {', '.join(f'{k}={v:g}' for k, v in OPTIM_LRS.items())})")
     ap.add_argument("--vocab", type=int, default=1000)
     ap.add_argument("--d-in", type=int, default=10)
     ap.add_argument("--teacher-seed", type=int, default=0)
@@ -204,7 +277,9 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     print(f"device={base.device}")
 
-    exps = {"temp", "speedup", "sgd", "sweep", "batch"} if "all" in args.experiments else set(args.experiments)
+    optimizers = parse_optimizers(args.optimizers)
+    exps = ({"temp", "speedup", "sgd", "sweep", "batch", "optim"} if "all" in args.experiments
+            else set(args.experiments))
     if "temp" in exps:
         exp_temp(base, args.out)
     if "speedup" in exps:
@@ -215,6 +290,8 @@ def main():
         exp_sweep(base, args.out)
     if "batch" in exps:
         exp_batch(base, args.out, batch_sizes=tuple(args.batch_sizes))
+    if "optim" in exps:
+        exp_optim(base, args.out, optimizers)
 
 
 if __name__ == "__main__":
