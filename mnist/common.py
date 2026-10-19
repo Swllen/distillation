@@ -99,9 +99,9 @@ def test_errors(model: nn.Module, x: torch.Tensor, y: torch.Tensor) -> int:
 
 
 @torch.no_grad()
-def evaluate(model: MLP, x: torch.Tensor, y: torch.Tensor, batch_size: int = 2000) -> dict:
-    """Errors (in total and per true class), mean cross-entropy and the fraction of dead
-    hidden units (never active on x)."""
+def evaluate(model: MLP, x: torch.Tensor, y: torch.Tensor, loss_fn, batch_size: int = 2000) -> dict:
+    """Errors (in total and per true class), the training loss (loss_fn's "loss", in eval
+    mode and without jitter) and the fraction of dead hidden units (never active on x)."""
     model.eval()
     loss = 0.0
     errors_by_class = torch.zeros(10, dtype=torch.long, device=x.device)
@@ -111,9 +111,9 @@ def evaluate(model: MLP, x: torch.Tensor, y: torch.Tensor, batch_size: int = 200
         h1 = F.relu(model.fc1(x[i : i + batch_size].flatten(start_dim=1)))
         h2 = F.relu(model.fc2(h1))
         logits = model.fc3(h2)
-        yb = y[i : i + batch_size]
+        xb, yb = x[i : i + batch_size], y[i : i + batch_size]
         errors_by_class += torch.bincount(yb[logits.argmax(dim=1) != yb], minlength=10)
-        loss += float(F.cross_entropy(logits, yb, reduction="sum"))
+        loss += float(loss_fn(logits, xb, yb)["loss"]) * len(xb)
         alive1 |= (h1 > 0).any(dim=0)
         alive2 |= (h2 > 0).any(dim=0)
     return {
@@ -123,18 +123,6 @@ def evaluate(model: MLP, x: torch.Tensor, y: torch.Tensor, batch_size: int = 200
         "dead_units_fc1": 1 - alive1.float().mean().item(),
         "dead_units_fc2": 1 - alive2.float().mean().item(),
     }
-
-
-@torch.no_grad()
-def objective(model: MLP, x: torch.Tensor, y: torch.Tensor, loss_fn, batch_size: int = 2000) -> float:
-    """The training loss itself (loss_fn's "loss"), averaged over all of x with the model in
-    eval mode and no jitter, so it can be compared between the training and test sets."""
-    model.eval()
-    total = 0.0
-    for i in range(0, len(x), batch_size):
-        xb, yb = x[i : i + batch_size], y[i : i + batch_size]
-        total += float(loss_fn(model(xb), xb, yb)["loss"]) * len(xb)
-    return total / len(x)
 
 
 @torch.no_grad()
@@ -312,8 +300,8 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
 
     Logged to W&B: the loss terms and gradient norm averaged over every log_every steps,
     the learning rate (and momentum), and every eval_every epochs the train and test errors,
-    their cross-entropy with the true labels, the training loss itself on both sets
-    (train/objective, test/objective), the fraction of dead hidden units, and the
+    the training loss on both sets (train/eval_loss, test/loss; eval mode, no jitter), the
+    fraction of dead hidden units, and the
     hidden-unit weight norms.
     """
     x_train, y_train, x_test, y_test = data
@@ -381,16 +369,15 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
 
         done = epoch + 1
         if done % args.eval_every == 0 or done == args.epochs:
-            test = evaluate(model, x_test, y_test)
+            test = evaluate(model, x_test, y_test, loss_fn)
             test_by_class = test.pop("errors_by_class")
-            train_eval = evaluate(model, x_train, y_train)
-            train_obj, test_obj = objective(model, x_train, y_train, loss_fn), objective(model, x_test, y_test, loss_fn)
+            train_eval = evaluate(model, x_train, y_train, loss_fn)
             epoch_means = {k: v.item() / steps_per_epoch for k, v in epoch_sums.items()}
             mean_loss = epoch_means["loss"]
             # Epoch means of every loss term (train_loss, train_soft_kl, ...) plus the eval results.
             entry = {"epoch": done, **{f"train_{k}": v for k, v in epoch_means.items()}}
-            entry.update({"test_errors": test["errors"], "test_loss": test["loss"], "train_errors": train_eval["errors"], "lr": eps})
-            entry.update({"train_objective": train_obj, "test_objective": test_obj})
+            entry.update({"train_eval_loss": train_eval["loss"], "test_loss": test["loss"]})
+            entry.update({"test_errors": test["errors"], "train_errors": train_eval["errors"], "lr": eps})
             if not adam:
                 entry["momentum"] = mom
             excluded_info = ""
@@ -403,14 +390,12 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
             log.update({f"test/{k}": v for k, v in test.items()})
             log.update({f"test/errors_on_{d}": test_by_class[d] for d in range(10)})
             log.update({"train/errors": train_eval["errors"], "train/eval_loss": train_eval["loss"]})
-            # The training loss itself on the full training and test sets (eval mode, no jitter).
-            log.update({"train/objective": train_obj, "test/objective": test_obj})
             log.update({f"weights/{k}": v for k, v in weight_stats(model, args.max_norm).items()})
             run.log(log, step=done * steps_per_epoch)
             optim_info = f"lr {eps:.2e}" if adam else f"eps {eps:.4f}  momentum {mom:.3f}"
             grad_info = f"grad {epoch_means['grad_norm']:.2e}  logit grad {epoch_means['logit_grad_norm']:.2e}"
             print(
-                f"epoch {done:4d}  loss {mean_loss:.4f}  objective train {train_obj:.4f} test {test_obj:.4f}  "
+                f"epoch {done:4d}  loss {mean_loss:.4f}  test loss {test['loss']:.4f}  "
                 f"test errors {test['errors']:4d}{excluded_info}  "
                 f"{grad_info}  {optim_info}  {time.time() - start:.0f}s",
                 flush=True,
