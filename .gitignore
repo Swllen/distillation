@@ -10,3 +10,4 @@ mnist/configs/*
 !mnist/configs/student_hard.toml
 !mnist/configs/student_distill.toml
 wandb/
+*.log
