@@ -79,14 +79,15 @@ def distillation_loss(
     log_p = F.log_softmax(teacher_logits / t, dim=1)
     p = log_p.exp()
     log_q = F.log_softmax(student_logits / t, dim=1)
+    q = log_q.exp()  # student probabilities at temperature T
     soft = -(p * log_q).sum(dim=1).mean()
     entropy = -(p * log_p).sum(dim=1).mean()
     if soft_loss == "forward":
-        soft_term = soft
+        soft_term = soft  # -sum p log q
     elif soft_loss == "swapped":
-        soft_term = -(log_q.exp() * log_p).sum(dim=1).mean()
+        soft_term = -(q * log_p).sum(dim=1).mean()  # -sum q log p
     elif soft_loss == "reverse_kl":
-        soft_term = (log_q.exp() * (log_q - log_p)).sum(dim=1).mean()
+        soft_term = (q * (log_q - log_p)).sum(dim=1).mean()  # sum q log(q / p)
     elif soft_loss == "teacher_argmax":
         soft_term = F.nll_loss(log_q, teacher_logits.argmax(dim=1))
     else:
@@ -98,7 +99,7 @@ def distillation_loss(
         "soft_ce": soft,
         "soft_kl": soft - entropy,
         "teacher_entropy": entropy,
-        "student_entropy": -(log_q.exp() * log_q).sum(dim=1).mean(),
+        "student_entropy": -(q * log_q).sum(dim=1).mean(),
         "hard_ce": hard,
     }
 

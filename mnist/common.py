@@ -305,7 +305,8 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
     x_train, y_train, x_test, y_test = data
     n = len(x_train)
     steps_per_epoch = n // args.batch_size
-    params = list(model.parameters())
+    param_names, params = zip(*model.named_parameters())
+    params = list(params)
     adam = args.optimizer == "adam"
     if adam:
         opt = torch.optim.Adam(params, lr=args.lr, betas=(args.adam_beta1, args.adam_beta2))
@@ -329,10 +330,16 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
         for i in range(steps_per_epoch):
             idx = perm[i * args.batch_size : (i + 1) * args.batch_size]
             x = jitter(x_train[idx], args.jitter)
-            terms = loss_fn(model(x), x, y_train[idx])
-            grads = torch.autograd.grad(terms["loss"], params)
+            logits = model(x)
+            terms = loss_fn(logits, x, y_train[idx])
+            *grads, logit_grad = torch.autograd.grad(terms["loss"], params + [logits])
             with torch.no_grad():
-                terms["grad_norm"] = torch.linalg.vector_norm(torch.stack(torch._foreach_norm(grads)))
+                layer_norms = torch._foreach_norm(grads)
+                terms["grad_norm"] = torch.linalg.vector_norm(torch.stack(layer_norms))
+                for name, g in zip(param_names, layer_norms):
+                    terms[f"grad_{name}"] = g
+                # Per-image gradient on the output logits (the loss is a batch mean, hence * batch size).
+                terms["logit_grad_norm"] = logit_grad.norm(dim=1).mean() * len(x)
                 if adam:
                     for q, g in zip(params, grads):
                         q.grad = g
@@ -383,8 +390,10 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
             log.update({f"weights/{k}": v for k, v in weight_stats(model, args.max_norm).items()})
             run.log(log, step=done * steps_per_epoch)
             optim_info = f"lr {eps:.2e}" if adam else f"eps {eps:.4f}  momentum {mom:.3f}"
+            grad_info = f"grad {epoch_means['grad_norm']:.2e}  logit grad {epoch_means['logit_grad_norm']:.2e}"
             print(
-                f"epoch {done:4d}  loss {mean_loss:.4f}  test errors {test['errors']:4d}{excluded_info}  {optim_info}  {time.time() - start:.0f}s",
+                f"epoch {done:4d}  loss {mean_loss:.4f}  test errors {test['errors']:4d}{excluded_info}  "
+                f"{grad_info}  {optim_info}  {time.time() - start:.0f}s",
                 flush=True,
             )
     return history
