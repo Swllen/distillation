@@ -188,6 +188,7 @@ OPTIONAL = {
     "lr_schedule": "exponential",
     "lr_min": 0.0,
     "exclude_digits": [],
+    "soft_loss": "forward",  # train_student.py only
 }
 
 
@@ -202,7 +203,7 @@ def parse_args(p: argparse.ArgumentParser, argv: list[str] | None = None) -> arg
         if getattr(args, key) is None:
             setattr(args, key, value)
     for key, value in OPTIONAL.items():
-        if getattr(args, key) is None:
+        if key in vars(args) and getattr(args, key) is None:
             setattr(args, key, value)
     missing = [k for k, v in vars(args).items() if v is None and k not in ("out", "device")]
     if missing:
@@ -223,7 +224,7 @@ def args_from_dict(
     unknown = sorted(set(settings) - set(vars(args)))
     if unknown:
         raise ValueError(f"unknown setting(s): {', '.join(unknown)}")
-    for key, value in {**OPTIONAL, **settings}.items():
+    for key, value in {**{k: v for k, v in OPTIONAL.items() if k in vars(args)}, **settings}.items():
         setattr(args, key, value)
     missing = [k for k, v in vars(args).items() if v is None and k not in ("out", "device")]
     if missing:

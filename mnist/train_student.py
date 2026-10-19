@@ -22,6 +22,9 @@ configs/student_distill.toml, and flags override them:
 
   uv run mnist/train_student.py --config mnist/configs/student_distill.toml --temperature 8
 
+--soft-loss replaces the soft-target term CE(p, q) by its swapped form -sum q log p, by
+KL(q || p), or by CE on the teacher's argmax labels (see SOFT_LOSSES below).
+
 Training metrics go to Weights & Biases (project distillation-mnist) unless --no-wandb.
 For distillation runs the loss is split into soft_kl, teacher_entropy and hard_ce.
 """
@@ -51,22 +54,51 @@ from common import (
 )
 
 
+# Soft-target term of the distillation loss, with p = softmax(v / T) from the teacher and
+# q = softmax(z / T) from the student:
+#   forward         CE(p, q) = -sum p log q = H(p) + KL(p || q)    minimum at q = p (the paper)
+#   swapped         -sum q log p = KL(q || p) + H(q)              minimum at q = one-hot(argmax p)
+#   reverse_kl      KL(q || p) = swapped - H(q)                   minimum at q = p
+#   teacher_argmax  CE(one-hot(argmax p), q)                      one-hot training on the teacher's labels
+SOFT_LOSSES = ("forward", "swapped", "reverse_kl", "teacher_argmax")
+
+
 def distillation_loss(
-    student_logits: torch.Tensor, teacher_logits: torch.Tensor, y: torch.Tensor, temperature: float, hard_weight: float
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    y: torch.Tensor,
+    temperature: float,
+    hard_weight: float,
+    soft_loss: str = "forward",
 ) -> dict[str, torch.Tensor]:
-    """Loss terms; "loss" is minimized. soft_ce = teacher_entropy + soft_kl, all at temperature T and
-    without the T^2 factor, so soft_kl is the part the student can reduce (its minimum is 0)."""
+    """Loss terms; "loss" is minimized. soft_term is the chosen soft-target term. soft_ce,
+    soft_kl and teacher_entropy always describe the forward CE (soft_ce = teacher_entropy +
+    soft_kl), at temperature T and without the T^2 factor, so runs with different soft_loss
+    can be compared on them."""
     t = temperature
     log_p = F.log_softmax(teacher_logits / t, dim=1)
     p = log_p.exp()
-    soft = -(p * F.log_softmax(student_logits / t, dim=1)).sum(dim=1).mean()
+    log_q = F.log_softmax(student_logits / t, dim=1)
+    soft = -(p * log_q).sum(dim=1).mean()
     entropy = -(p * log_p).sum(dim=1).mean()
+    if soft_loss == "forward":
+        soft_term = soft
+    elif soft_loss == "swapped":
+        soft_term = -(log_q.exp() * log_p).sum(dim=1).mean()
+    elif soft_loss == "reverse_kl":
+        soft_term = (log_q.exp() * (log_q - log_p)).sum(dim=1).mean()
+    elif soft_loss == "teacher_argmax":
+        soft_term = F.nll_loss(log_q, teacher_logits.argmax(dim=1))
+    else:
+        raise ValueError(f"soft_loss must be one of {SOFT_LOSSES}, not {soft_loss!r}")
     hard = F.cross_entropy(student_logits, y)
     return {
-        "loss": (1 - hard_weight) * t * t * soft + hard_weight * hard,
+        "loss": (1 - hard_weight) * t * t * soft_term + hard_weight * hard,
+        "soft_term": soft_term,
         "soft_ce": soft,
         "soft_kl": soft - entropy,
         "teacher_entropy": entropy,
+        "student_entropy": -(log_q.exp() * log_q).sum(dim=1).mean(),
         "hard_ce": hard,
     }
 
@@ -77,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--teacher", help='teacher checkpoint, relative paths are under mnist/; "" trains on hard labels only')
     p.add_argument("--temperature", type=float)
     p.add_argument("--hard-weight", type=float, help="weight of the hard-label term, 0..1")
+    p.add_argument("--soft-loss", choices=SOFT_LOSSES, help="form of the soft-target term (default forward)")
     return p
 
 
@@ -98,7 +131,7 @@ def run_student(args: argparse.Namespace) -> list[dict]:
     paper = None
     if not args.teacher and not args.exclude_digits:
         paper = 146
-    elif args.teacher and args.temperature == 20:
+    elif args.teacher and args.temperature == 20 and args.soft_loss == "forward":
         paper = {(): 74, (3,): 206}.get(tuple(args.exclude_digits))
     run = start_run(args, job="student", paper_test_errors=paper)
     torch.manual_seed(args.seed)
@@ -115,7 +148,7 @@ def run_student(args: argparse.Namespace) -> list[dict]:
         def loss_fn(logits: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
             with torch.no_grad():
                 teacher_logits = teacher(x)
-            return distillation_loss(logits, teacher_logits, y, args.temperature, args.hard_weight)
+            return distillation_loss(logits, teacher_logits, y, args.temperature, args.hard_weight, args.soft_loss)
     else:
 
         def loss_fn(logits: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
