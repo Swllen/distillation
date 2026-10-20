@@ -1,0 +1,6 @@
+# Install the matching CUDA wheels first; see SERVER.md.
+torch==2.7.1
+torchvision==0.22.1
+numpy==1.26.4
+Pillow==11.2.1
+tensorboard==2.19.0
