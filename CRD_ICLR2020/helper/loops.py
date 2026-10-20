@@ -46,9 +46,6 @@ def train_vanilla(epoch, train_loader, model, criterion, optimizer, opt):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        # tensorboard logger
-        pass
-
         # print info
         if idx % opt.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
@@ -90,6 +87,9 @@ def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, o
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+    losses_cls = AverageMeter()
+    losses_div = AverageMeter()
+    losses_kd = AverageMeter()
     top1 = AverageMeter()
     top5 = AverageMeter()
 
@@ -189,6 +189,9 @@ def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, o
 
         acc1, acc5 = accuracy(logit_s, target, topk=(1, 5))
         losses.update(loss.item(), input.size(0))
+        losses_cls.update(loss_cls.item(), input.size(0))
+        losses_div.update(loss_div.item(), input.size(0))
+        losses_kd.update(loss_kd.item() if torch.is_tensor(loss_kd) else loss_kd, input.size(0))
         top1.update(acc1[0], input.size(0))
         top5.update(acc5[0], input.size(0))
 
@@ -216,7 +219,9 @@ def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, o
     print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
           .format(top1=top1, top5=top5))
 
-    return top1.avg, losses.avg
+    # the unweighted loss terms; loss = gamma * loss_cls + alpha * loss_div + beta * loss_kd
+    terms = dict(loss_cls=losses_cls.avg, loss_div=losses_div.avg, loss_kd=losses_kd.avg)
+    return top1.avg, losses.avg, terms
 
 
 def validate(val_loader, model, criterion, opt):

@@ -9,8 +9,7 @@ import argparse
 import socket
 import time
 
-from helper import logger as tb_logger
-from helper.experiment import add_arguments, prepare, record_epoch
+from helper.experiment import add_arguments, prepare, record_epoch, start_run
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -40,7 +39,6 @@ def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
     parser.add_argument('--print_freq', type=int, default=100, help='print frequency')
-    parser.add_argument('--tb_freq', type=int, default=500, help='tb frequency')
     parser.add_argument('--save_freq', type=int, default=40, help='save frequency')
     parser.add_argument('--batch_size', type=int, default=64, help='batch_size')
     parser.add_argument('--num_workers', type=int, default=8, help='num of workers to use')
@@ -105,7 +103,6 @@ def parse_option():
 
     # set the path according to the environment
     opt.model_path = './save/student_model'
-    opt.tb_path = './save/student_tensorboards'
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
@@ -119,10 +116,6 @@ def parse_option():
     opt.model_name = opt.model_name.replace(':', '-') + '_seed_{}'.format(opt.seed)
     if opt.max_batches:
         opt.model_name += '_smoke'
-
-    opt.tb_folder = os.path.join(opt.tb_path, opt.model_name)
-    if not os.path.isdir(opt.tb_folder):
-        os.makedirs(opt.tb_folder)
 
     opt.save_folder = os.path.join(opt.model_path, opt.model_name)
     if not os.path.isdir(opt.save_folder):
@@ -155,9 +148,7 @@ def main():
 
     opt = parse_option()
     prepare(opt)
-
-    # tensorboard logger
-    logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
+    run = start_run(opt, 'student_' + opt.distill)
 
     # dataloader
     if opt.dataset == 'cifar100':
@@ -244,7 +235,7 @@ def main():
         init_trainable_list.append(connector)
         init_trainable_list.append(model_s.get_feat_modules())
         criterion_kd = ABLoss(len(feat_s[1:-1]))
-        init(model_s, model_t, init_trainable_list, criterion_kd, train_loader, logger, opt)
+        init(model_s, model_t, init_trainable_list, criterion_kd, train_loader, run, opt)
         # classification
         module_list.append(connector)
     elif opt.distill == 'factor':
@@ -256,7 +247,7 @@ def main():
         init_trainable_list = nn.ModuleList([])
         init_trainable_list.append(paraphraser)
         criterion_init = nn.MSELoss()
-        init(model_s, model_t, init_trainable_list, criterion_init, train_loader, logger, opt)
+        init(model_s, model_t, init_trainable_list, criterion_init, train_loader, run, opt)
         # classification
         criterion_kd = FactorTransfer()
         module_list.append(translator)
@@ -269,7 +260,7 @@ def main():
         # init stage training
         init_trainable_list = nn.ModuleList([])
         init_trainable_list.append(model_s.get_feat_modules())
-        init(model_s, model_t, init_trainable_list, criterion_kd, train_loader, logger, opt)
+        init(model_s, model_t, init_trainable_list, criterion_kd, train_loader, run, opt)
         # classification training
         pass
     else:
@@ -297,6 +288,7 @@ def main():
     # validate teacher accuracy
     teacher_acc, _, _ = validate(val_loader, model_t, criterion_cls, opt)
     print('teacher accuracy: ', teacher_acc)
+    run.summary['teacher_acc'] = float(teacher_acc)
 
     # routine
     for epoch in range(1, opt.epochs + 1):
@@ -305,19 +297,13 @@ def main():
         print("==> training...")
 
         time1 = time.time()
-        train_acc, train_loss = train(epoch, train_loader, module_list, criterion_list, optimizer, opt)
+        train_acc, train_loss, loss_terms = train(epoch, train_loader, module_list, criterion_list, optimizer, opt)
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
-        logger.log_value('train_acc', train_acc, epoch)
-        logger.log_value('train_loss', train_loss, epoch)
-
         test_acc, tect_acc_top5, test_loss = validate(val_loader, model_s, criterion_cls, opt)
-        record_epoch(opt, epoch, train_acc, train_loss, test_acc, tect_acc_top5, test_loss)
-
-        logger.log_value('test_acc', test_acc, epoch)
-        logger.log_value('test_loss', test_loss, epoch)
-        logger.log_value('test_acc_top5', tect_acc_top5, epoch)
+        record_epoch(opt, epoch, train_acc, train_loss, test_acc, tect_acc_top5, test_loss, run,
+                     lr=optimizer.param_groups[0]['lr'], epoch_time=time2 - time1, **loss_terms)
 
         # save the best model
         if test_acc > best_acc:
@@ -345,6 +331,8 @@ def main():
     # This best accuracy is only for printing purpose.
     # The results reported in the paper/README is from the last epoch. 
     print('best accuracy:', best_acc)
+    run.summary['best_test_acc'] = float(best_acc)
+    run.summary['last_test_acc'] = float(test_acc)
 
     # save model
     state = {
@@ -353,7 +341,7 @@ def main():
     }
     save_file = os.path.join(opt.save_folder, '{}_last.pth'.format(opt.model_s))
     torch.save(state, save_file)
-    logger.close()
+    run.finish()
 
 
 if __name__ == '__main__':

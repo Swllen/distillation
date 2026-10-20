@@ -1,12 +1,19 @@
 # CRD 复现：本地改代码，服务器运行
 
-状态（2026-10-20）：已准备兼容性修改与运行脚本。未在本机安装依赖、运行 smoke test 或训练；服务器验证待完成。用户明确要求本机只修改代码。
+状态（2026-10-20）：已准备兼容性修改、运行脚本、W&B 记录和 reproduce.ipynb。本机只在 CPU 上用假数据检查了 W&B 记录与损失分项；未下载 CIFAR-100、未跑 smoke test 或训练，服务器验证待完成。
+
+## 两种运行方式
+
+- **Notebook（给老师复现）**：`reproduce.ipynb` 从上到下运行即完成 teacher → vanilla → KD → CRD，并给出结果表和曲线。它只调用 `scripts/run_experiment.py` 里的 `run_stage`，与命令行训练的是同一套东西。顶部 `SMOKE = True` 时每项只跑 1 epoch、2 个 batch，用来先检查流程。
+- **命令行**：下面各步的 `python scripts/run_experiment.py ...`。在 tmux 里跑完后，notebook（`REUSE = True`）直接读取已完成的 runs/，不重复训练。
+
+两种方式都会记录到 Weights & Biases，项目 `distillation-crd`，每个 stage 一个 group（smoke 为 `<stage>_smoke`），run 名与 runs/ 下文件夹同名。记录：`train/acc`、`train/loss`、`train/lr`、`train/epoch_time`，学生另有未加权的 `train/loss_cls`、`train/loss_div`、`train/loss_kd`；`test/acc`、`test/top5`、`test/loss`；summary 中有 `teacher_acc`、`last_test_acc`、`best_test_acc`。命令行加 `--no-wandb` 关闭，notebook 设 `WANDB = False`；服务器不能联网时设 `export WANDB_MODE=offline`，之后用 `wandb sync` 上传。
 
 ## 目录与 Git
 
 本实验位于 distillation/CRD_ICLR2020，由 distillation 父仓库统一管理，不再保留活动的嵌套 Git 仓库。原上游 commit 为 `b84f547c5db6a35318d4671d7d5c4de74c822403`，上游地址：https://github.com/HobbitLong/RepDistiller 。BSD-2-Clause LICENSE 保留。
 
-原嵌套仓库元数据已移至父仓库 `.git/repdistiller-upstream.git`，原父仓库 ignore 文件备份为 `.git/gitignore-before-crd.backup`。这两项是本机备份，不会随 push 上传。尚未执行 git add、commit 或 push；把 CRD_ICLR2020 作为普通目录提交后，服务器才能通过父仓库获取修改。不要重新在 CRD_ICLR2020 内 git clone。
+原嵌套仓库元数据已移至父仓库 `.git/repdistiller-upstream.git`，原父仓库 ignore 文件备份为 `.git/gitignore-before-crd.backup`。这两项是本机备份，不会随 push 上传。CRD_ICLR2020 作为普通目录提交在父仓库中，服务器 clone/pull 父仓库即可获取修改。不要重新在 CRD_ICLR2020 内 git clone。
 
 父目录 pyproject.toml、uv.lock 和已有 .venv 不变。此实验使用自己的 .venv，避免改变已有 MNIST 等实验环境。
 
@@ -22,6 +29,16 @@ python -m pip install torch==2.7.1 torchvision==0.22.1 --index-url https://downl
 python -m pip install -r requirements-server.txt
 nvidia-smi
 python scripts/check_environment.py
+wandb login
+```
+
+用 notebook 时，在 tmux 中启动 Jupyter（断开 SSH 不会中断训练），本地用端口转发打开：
+
+```bash
+tmux new -s crd
+source .venv/bin/activate
+jupyter lab --no-browser --port 8888 reproduce.ipynb
+# 本地另开终端：ssh -N -L 8888:localhost:8888 <user>@<server>，再在浏览器打开 Jupyter 打印的 http://localhost:8888/... 链接
 ```
 
 安装来源：https://pytorch.org/get-started/previous-versions/#v271 。Blackwell 型号、服务器驱动、系统架构均尚未核实；不能把安装成功视为 GPU 可用。检查脚本打印实际 GPU、compute capability、编译架构，并进行 CUDA 卷积前向与反向。若失败，先保留报错，按具体 GPU/驱动调整安装组合。ARM 服务器需单独确认 wheel 支持。
@@ -79,7 +96,7 @@ configs/cifar100.json 保存正式配置：240 epochs、batch 64、SGD lr 0.05�
 
 ## 记录、失败与重复运行
 
-每个 runs/<stage>_trial<N>_seed<S>[_smoke]/ 下保存 manifest.json（命令、配置、teacher SHA256、退出状态、最后一轮、best）、pip-freeze.txt、console.log，以及 save/ 下的 config.json、environment.json、metrics.jsonl、working-tree.patch 和权重。TensorBoard 也在该次运行的 save/ 下。数据、日志和权重不进 Git；需要同步的结果摘要请写在 RESULTS.md。
+每个 runs/<stage>_trial<N>_seed<S>[_smoke]/ 下保存 manifest.json（命令、配置、teacher SHA256、退出状态、最后一轮、best）、pip-freeze.txt、console.log，以及 save/ 下的 config.json、environment.json、metrics.jsonl（含 lr 和学生的损失分项）、working-tree.patch、权重和 W&B 本地文件（wandb/）。数据、日志和权重不进 Git；需要同步的结果摘要请写在 RESULTS.md。
 
 同名运行目录存在就拒绝覆盖；重跑用 --trial 2。尚未实现中断恢复，失败后用新 trial 从头运行，不要把重新开始称为 resume。若改变配置文件，请使用 --config 指定另一个文件并选新 trial，保留原配置。
 
@@ -90,10 +107,12 @@ commit 后再同步到服务器，保证源码可追溯。working-tree.patch 不
 ## 修改范围
 
 - torchvision CIFAR-100 的 train_data/train_labels 更新为 data/targets。
-- tensorboard_logger 替换为 torch.utils.tensorboard，保留原训练调用方式。
+- 去掉 tensorboard_logger / TensorBoard，训练曲线只记录到 W&B 和 metrics.jsonl。
 - CRD alias sampler 按输入 device 移动，取消构造时强制 .cuda()。
 - checkpoint 默认安全 weights-only 加载到 CPU，teacher 架构可显式指定；新 last checkpoint 中 opt 改为普通字典。
 - KD 使用 reduction='sum'，保留原损失缩放；不改蒸馏目标。
 - 新增 seed、smoke batch 上限、运行元数据、逐轮指标和防覆盖规则。
+- 新增 W&B 记录（helper/experiment.py 的 start_run / record_epoch）；train_distill 额外返回未加权的 loss_cls / loss_div / loss_kd，训练本身不变。
+- run_experiment.py 拆出 run_stage 供 reproduce.ipynb 调用；命令行用法不变，另加 --no-wandb、--wandb-project、--wandb-entity。
 
 本次只针对 CIFAR-100 vanilla/KD/CRD 路径准备兼容性修改；其他蒸馏方法和 ImageNet 未验证。全部运行验证留待服务器完成。

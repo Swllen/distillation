@@ -5,8 +5,7 @@ import argparse
 import socket
 import time
 
-from helper import logger as tb_logger
-from helper.experiment import add_arguments, prepare, record_epoch
+from helper.experiment import add_arguments, prepare, record_epoch, start_run
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -27,7 +26,6 @@ def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
     parser.add_argument('--print_freq', type=int, default=100, help='print frequency')
-    parser.add_argument('--tb_freq', type=int, default=500, help='tb frequency')
     parser.add_argument('--save_freq', type=int, default=40, help='save frequency')
     parser.add_argument('--batch_size', type=int, default=64, help='batch_size')
     parser.add_argument('--num_workers', type=int, default=8, help='num of workers to use')
@@ -59,7 +57,6 @@ def parse_option():
 
     # set the path according to the environment
     opt.model_path = './save/models'
-    opt.tb_path = './save/tensorboard'
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
@@ -71,10 +68,6 @@ def parse_option():
     opt.model_name += '_seed_{}'.format(opt.seed)
     if opt.max_batches:
         opt.model_name += '_smoke'
-
-    opt.tb_folder = os.path.join(opt.tb_path, opt.model_name)
-    if not os.path.isdir(opt.tb_folder):
-        os.makedirs(opt.tb_folder)
 
     opt.save_folder = os.path.join(opt.model_path, opt.model_name)
     if not os.path.isdir(opt.save_folder):
@@ -88,6 +81,7 @@ def main():
 
     opt = parse_option()
     prepare(opt)
+    run = start_run(opt, 'vanilla')
 
     # dataloader
     if opt.dataset == 'cifar100':
@@ -112,9 +106,6 @@ def main():
         criterion = criterion.cuda()
         cudnn.benchmark = not opt.deterministic
 
-    # tensorboard
-    logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
-
     # routine
     for epoch in range(1, opt.epochs + 1):
 
@@ -126,15 +117,9 @@ def main():
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
-        logger.log_value('train_acc', train_acc, epoch)
-        logger.log_value('train_loss', train_loss, epoch)
-
         test_acc, test_acc_top5, test_loss = validate(val_loader, model, criterion, opt)
-        record_epoch(opt, epoch, train_acc, train_loss, test_acc, test_acc_top5, test_loss)
-
-        logger.log_value('test_acc', test_acc, epoch)
-        logger.log_value('test_acc_top5', test_acc_top5, epoch)
-        logger.log_value('test_loss', test_loss, epoch)
+        record_epoch(opt, epoch, train_acc, train_loss, test_acc, test_acc_top5, test_loss, run,
+                     lr=optimizer.param_groups[0]['lr'], epoch_time=time2 - time1)
 
         # save the best model
         if test_acc > best_acc:
@@ -164,6 +149,8 @@ def main():
     # This best accuracy is only for printing purpose.
     # The results reported in the paper/README is from the last epoch.
     print('best accuracy:', best_acc)
+    run.summary['best_test_acc'] = float(best_acc)
+    run.summary['last_test_acc'] = float(test_acc)
 
     # save model
     state = {
@@ -173,7 +160,7 @@ def main():
     }
     save_file = os.path.join(opt.save_folder, '{}_last.pth'.format(opt.model))
     torch.save(state, save_file)
-    logger.close()
+    run.finish()
 
 
 if __name__ == '__main__':
