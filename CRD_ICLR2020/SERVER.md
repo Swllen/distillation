@@ -5,7 +5,7 @@
 ## 两种运行方式
 
 - **Notebook（给老师复现）**：`reproduce.ipynb` 从上到下运行即完成 teacher → vanilla → KD → CRD，并给出结果表和曲线。它只调用 `scripts/run_experiment.py` 里的 `run_stage`，与命令行训练的是同一套东西。顶部 `SMOKE = True` 时每项只跑 1 epoch、2 个 batch，用来先检查流程。
-- **命令行**：下面各步的 `python scripts/run_experiment.py ...`。在 tmux 里跑完后，notebook（`REUSE = True`）直接读取已完成的 runs/，不重复训练。
+- **命令行**：下面各步的 `uv run CRD_ICLR2020/scripts/run_experiment.py ...`（在仓库根目录运行）。在 tmux 里跑完后，notebook（`REUSE = True`）直接读取已完成的 runs/，不重复训练。
 
 两种方式都会记录到 Weights & Biases，项目 `distillation-crd`，每个 stage 一个 group（smoke 为 `<stage>_smoke`），run 名与 runs/ 下文件夹同名。记录：`train/acc`、`train/loss`、`train/lr`、`train/epoch_time`，学生另有未加权的 `train/loss_cls`、`train/loss_div`、`train/loss_kd`；`test/acc`、`test/top5`、`test/loss`；summary 中有 `teacher_acc`、`last_test_acc`、`best_test_acc`。命令行加 `--no-wandb` 关闭，notebook 设 `WANDB = False`；服务器不能联网时设 `export WANDB_MODE=offline`，之后用 `wandb sync` 上传。
 
@@ -15,51 +15,44 @@
 
 原嵌套仓库元数据已移至父仓库 `.git/repdistiller-upstream.git`，原父仓库 ignore 文件备份为 `.git/gitignore-before-crd.backup`。这两项是本机备份，不会随 push 上传。CRD_ICLR2020 作为普通目录提交在父仓库中，服务器 clone/pull 父仓库即可获取修改。不要重新在 CRD_ICLR2020 内 git clone。
 
-父目录 pyproject.toml、uv.lock 和已有 .venv 不变。此实验使用自己的 .venv，避免改变已有 MNIST 等实验环境。
+## 环境：与 MNIST 共用根目录的 uv 环境
 
-## 服务器独立环境
-
-以下操作全部在 Linux 训练服务器进行，先进入仓库的 CRD_ICLR2020 目录。建议 Python 3.11。这里固定一个已有官方 CUDA 12.8 wheel 的版本组合，不追随 latest：
+CRD 和 mnist/、toy_distillation/ 一样，使用仓库根目录的 pyproject.toml、uv.lock 和 .venv，不另建环境；CRD 所需的 torch、torchvision、wandb、matplotlib 都已在其中。在 Linux 上 uv.lock 解析出带 CUDA 的 torch。以下命令都在服务器的仓库根目录 distillation/ 下运行，和 MNIST 相同：
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
-python -m pip install -r requirements-server.txt
+uv sync
 nvidia-smi
-python scripts/check_environment.py
-wandb login
+uv run CRD_ICLR2020/scripts/check_environment.py
+uv run wandb login
 ```
+
+检查脚本打印实际 GPU、compute capability、torch 编译支持的架构，并进行 CUDA 卷积前向与反向；安装成功不等于 GPU 可用。若失败，先保留报错再调整。
 
 用 notebook 时，在 tmux 中启动 Jupyter（断开 SSH 不会中断训练），本地用端口转发打开：
 
 ```bash
 tmux new -s crd
-source .venv/bin/activate
-jupyter lab --no-browser --port 8888 reproduce.ipynb
+uv run --with jupyter jupyter lab --no-browser --port 8888 CRD_ICLR2020/reproduce.ipynb
 # 本地另开终端：ssh -N -L 8888:localhost:8888 <user>@<server>，再在浏览器打开 Jupyter 打印的 http://localhost:8888/... 链接
 ```
 
-安装来源：https://pytorch.org/get-started/previous-versions/#v271 。Blackwell 型号、服务器驱动、系统架构均尚未核实；不能把安装成功视为 GPU 可用。检查脚本打印实际 GPU、compute capability、编译架构，并进行 CUDA 卷积前向与反向。若失败，先保留报错，按具体 GPU/驱动调整安装组合。ARM 服务器需单独确认 wheel 支持。
-
-可选：设置 `export CUDA_VISIBLE_DEVICES=0` 选择单张卡；不要更改 batch size 以求占满显存。多卡/DDP 不在本轮复现范围内。可设置 `export CRD_DATA_ROOT=/absolute/path/to/cifar100`；默认数据存入项目 data/，torchvision 首次会下载 CIFAR-100，需联网。
+可选：设置 `export CUDA_VISIBLE_DEVICES=0` 选择单张卡；不要更改 batch size 以求占满显存。多卡/DDP 不在本轮复现范围内。可设置 `export CRD_DATA_ROOT=/absolute/path/to/cifar100`；默认数据存入 CRD_ICLR2020/data/，torchvision 首次会下载 CIFAR-100，需联网。
 
 ## 第一步：服务器 smoke test
 
 ```bash
-python scripts/run_experiment.py teacher --smoke
-python scripts/run_experiment.py vanilla --smoke
+uv run CRD_ICLR2020/scripts/run_experiment.py teacher --smoke
+uv run CRD_ICLR2020/scripts/run_experiment.py vanilla --smoke
 ```
 
 teacher smoke 生成的 checkpoint 为：
 
-`runs/teacher_trial1_seed0_smoke/save/models/resnet32x4_cifar100_lr_0.05_decay_0.0005_trial_1_seed_0_smoke/resnet32x4_last.pth`
+`CRD_ICLR2020/runs/teacher_trial1_seed0_smoke/save/models/resnet32x4_cifar100_lr_0.05_decay_0.0005_trial_1_seed_0_smoke/resnet32x4_last.pth`
 
 ```bash
-SMOKE_TEACHER="$PWD/runs/teacher_trial1_seed0_smoke/save/models/resnet32x4_cifar100_lr_0.05_decay_0.0005_trial_1_seed_0_smoke/resnet32x4_last.pth"
-python scripts/run_experiment.py kd --smoke --teacher "$SMOKE_TEACHER"
-python scripts/run_experiment.py crd --smoke --teacher "$SMOKE_TEACHER"
+SMOKE_TEACHER="$PWD/CRD_ICLR2020/runs/teacher_trial1_seed0_smoke/save/models/resnet32x4_cifar100_lr_0.05_decay_0.0005_trial_1_seed_0_smoke/resnet32x4_last.pth"
+uv run CRD_ICLR2020/scripts/run_experiment.py kd --smoke --teacher "$SMOKE_TEACHER"
+uv run CRD_ICLR2020/scripts/run_experiment.py crd --smoke --teacher "$SMOKE_TEACHER"
 ```
 
 每项只跑 1 epoch、2 个训练 batch、2 个验证 batch，num_workers=0；CRD 仍使用完整 50000 样本 memory bank、16384 negatives，以检查正式配置的主要显存需求。会下载完整数据；smoke 不等于小数据训练。这个 teacher 只是接口检查用，不能用于正式蒸馏。脚本要求指标有限，并记录 smoke_passed；尚未在任何服务器执行。正式数据加载多进程也需在完整运行首轮观察。
@@ -72,22 +65,22 @@ python scripts/run_experiment.py crd --smoke --teacher "$SMOKE_TEACHER"
 - 使用上游发布的 teacher：参阅原 README 和下载脚本，确认来源。用 --teacher 指定 checkpoint，架构按配置为 resnet32x4。若旧文件含 argparse.Namespace 等对象，只有信任来源时才加 --trusted-checkpoint；默认采用 weights_only=True。不要把随机初始化或 smoke teacher 当作正式 teacher。
 
 ```bash
-python scripts/run_experiment.py teacher --seed 0
-python scripts/run_experiment.py vanilla --seed 0
+uv run CRD_ICLR2020/scripts/run_experiment.py teacher --seed 0
+uv run CRD_ICLR2020/scripts/run_experiment.py vanilla --seed 0
 ```
 
 正式 teacher 的默认路径：
 
 ```bash
-TEACHER="$PWD/runs/teacher_trial1_seed0/save/models/resnet32x4_cifar100_lr_0.05_decay_0.0005_trial_1_seed_0/resnet32x4_last.pth"
+TEACHER="$PWD/CRD_ICLR2020/runs/teacher_trial1_seed0/save/models/resnet32x4_cifar100_lr_0.05_decay_0.0005_trial_1_seed_0/resnet32x4_last.pth"
 ```
 
 ## 第三步：KD、CRD，以及可选 CRD+KD
 
 ```bash
-python scripts/run_experiment.py kd --seed 0 --teacher "$TEACHER"
-python scripts/run_experiment.py crd --seed 0 --teacher "$TEACHER"
-python scripts/run_experiment.py crd_kd --seed 0 --teacher "$TEACHER"
+uv run CRD_ICLR2020/scripts/run_experiment.py kd --seed 0 --teacher "$TEACHER"
+uv run CRD_ICLR2020/scripts/run_experiment.py crd --seed 0 --teacher "$TEACHER"
+uv run CRD_ICLR2020/scripts/run_experiment.py crd_kd --seed 0 --teacher "$TEACHER"
 ```
 
 configs/cifar100.json 保存正式配置：240 epochs、batch 64、SGD lr 0.05、momentum 0.9、weight decay 5e-4；沿用上游在 epoch >150、>180、>210 衰减的实现。KD 的 CE/KL/CRD 权重是 0.1/0.9/0，CRD 是 1/0/0.8，CRD+KD 是 1/1/0.8；KL T=4，CRD feature_dim=128、K=16384、T=0.07、momentum=0.5、exact positives。权重来自上游 scripts/run_cifar_distill.sh。
@@ -100,7 +93,7 @@ configs/cifar100.json 保存正式配置：240 epochs、batch 64、SGD lr 0.05�
 
 同名运行目录存在就拒绝覆盖；重跑用 --trial 2。尚未实现中断恢复，失败后用新 trial 从头运行，不要把重新开始称为 resume。若改变配置文件，请使用 --config 指定另一个文件并选新 trial，保留原配置。
 
-commit 后再同步到服务器，保证源码可追溯。working-tree.patch 不包含 Git 未跟踪文件，不能替代提交源码。脚本保存实际 pip freeze，但它不是跨平台 lockfile。
+commit 后再同步到服务器，保证源码可追溯。working-tree.patch 不包含 Git 未跟踪文件，不能替代提交源码。pip-freeze.txt 是脚本从 importlib.metadata 读出的实际已安装包版本（uv 环境没有 pip 也可用）；环境本身由根目录 uv.lock 固定。
 
 默认设置随机种子并关闭 TF32；不保证逐位一致。需要更严格复现时给每项加 --deterministic，脚本同时设置 CUBLAS_WORKSPACE_CONFIG；不支持确定性运算时会报错，勿悄悄关闭后继续混用结果。
 

@@ -4,6 +4,7 @@ Used from the command line (see SERVER.md) and by reproduce.ipynb through run_st
 """
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import math
 import os
@@ -91,8 +92,9 @@ def run_stage(stage, config=ROOT / 'configs/cifar100.json', teacher=None, seed=0
                     teacher_sha256=sha256(teacher) if teacher else None, smoke=smoke, status='starting')
     path = folder / 'manifest.json'
     path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
-    (folder / 'pip-freeze.txt').write_text(subprocess.check_output(
-        [sys.executable, '-m', 'pip', 'freeze'], text=True), encoding='utf-8')
+    # Installed packages, read directly so that it also works in uv venvs, which have no pip.
+    packages = sorted(f"{d.metadata['Name']}=={d.version}" for d in importlib.metadata.distributions())
+    (folder / 'pip-freeze.txt').write_text('\n'.join(packages) + '\n', encoding='utf-8')
     code = 1
     try:
         with (folder / 'console.log').open('w', encoding='utf-8') as log:
