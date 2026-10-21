@@ -39,6 +39,8 @@ def init(model_s, model_t, init_modules, criterion, train_loader, run, opt):
         losses.reset()
         end = time.time()
         for idx, data in enumerate(train_loader):
+            if opt.max_batches and idx >= opt.max_batches:
+                break
             if opt.distill in ['crd']:
                 input, target, index, contrast_idx = data
             else:
@@ -86,7 +88,8 @@ def init(model_s, model_t, init_modules, criterion, train_loader, run, opt):
             end = time.time()
 
         # end of epoch
-        run.log({'init/epoch': epoch, 'init/train_loss': losses.avg})
+        # init epochs are plotted at epoch 1 - init_epochs ... 0, just before distillation epoch 1
+        run.log({'epoch': epoch - opt.init_epochs, 'init/train_loss': losses.avg})
         print('Epoch: [{0}/{1}]\t'
               'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
               'losses: {losses.val:.3f} ({losses.avg:.3f})'.format(

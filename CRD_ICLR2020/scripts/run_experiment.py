@@ -13,8 +13,14 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-STAGES = ['teacher', 'vanilla', 'kd', 'crd', 'crd_kd']
-DISTILLED = ['kd', 'crd', 'crd_kd']
+# Distilled stage -> train_student.py --distill; their loss weights are config['loss_weights'][stage].
+DISTILL = {'kd': 'kd', 'crd': 'crd', 'crd_kd': 'crd', 'fitnet': 'hint', 'at': 'attention', 'sp': 'similarity',
+           'cc': 'correlation', 'vid': 'vid', 'rkd': 'rkd', 'pkt': 'pkt', 'ab': 'abound', 'ft': 'factor',
+           'fsp': 'fsp', 'nst': 'nst'}
+DISTILLED = list(DISTILL)
+STAGES = ['teacher', 'vanilla'] + DISTILLED
+# Two-stage methods: init_epochs of pretraining (helper/pretrain.py) before distillation.
+TWO_STAGE = ['ab', 'ft', 'fsp']
 # Lines shown with echo=False: one summary per epoch plus the start and end of a run.
 SUMMARY = ('epoch ', ' * Acc', 'teacher accuracy', 'best accuracy', '==> loading', 'Files already', 'Downloading')
 
@@ -43,9 +49,13 @@ def build_command(stage, config, teacher, seed, trial, smoke, deterministic, tru
         command += ['--wandb_entity', wandb_entity]
     if distilled:
         command += ['--model_s', config['student'], '--model_t', config['teacher'],
-                    '--path_t', str(teacher), '--distill', 'kd' if stage == 'kd' else 'crd']
+                    '--path_t', str(teacher), '--distill', DISTILL[stage]]
         for key in ['kd_T', 'feat_dim', 'nce_k', 'nce_t', 'nce_m', 'mode']:
             command += ['--' + key, str(config[key])]
+        if stage == 'fitnet':
+            command += ['--hint_layer', str(config['hint_layer'])]
+        if stage in TWO_STAGE:
+            command += ['--init_epochs', str(1 if smoke else config['init_epochs'])]
         for flag, value in zip(['-r', '-a', '-b'], config['loss_weights'][stage]):
             command += [flag, str(value)]
         if trusted_checkpoint:
@@ -53,6 +63,19 @@ def build_command(stage, config, teacher, seed, trial, smoke, deterministic, tru
     else:
         command += ['--model', config['teacher' if stage == 'teacher' else 'student']]
     return command
+
+
+def stage_settings(config, stage):
+    """The part of config that affects `stage`: two runs of a stage with equal settings are the same run."""
+    settings = {key: value for key, value in config.items()
+                if key not in ('loss_weights', 'hint_layer', 'init_epochs')}
+    if stage in DISTILLED:
+        settings['loss_weights'] = config['loss_weights'][stage]
+    if stage == 'fitnet':
+        settings['hint_layer'] = config['hint_layer']
+    if stage in TWO_STAGE:
+        settings['init_epochs'] = config['init_epochs']
+    return settings
 
 
 def sha256(path):

@@ -87,6 +87,19 @@ configs/cifar100.json 保存正式配置：240 epochs、batch 64、SGD lr 0.05�
 
 先完成 seed 0，再对 vanilla/KD/CRD 使用 seed 1、2；保持同一 teacher 并记录其 SHA256。每项报告最后一轮 test top-1，以及三次运行均值和标准差；best 精度单列。上游说明论文/README 使用最后一轮结果，不能拿本地 best 与其比较。上游 resnet32x4→resnet8x4 参考值：teacher 79.42%、vanilla 72.50%、KD 73.33%、CRD 75.51%；这些是上游基准，不是本次实测，现代软件栈和重新训练 teacher 可能产生差异。
 
+## 第四步（可选）：论文 Table 1 的其他蒸馏方法
+
+stage 名与上游 `--distill` 的对应：`fitnet`→hint、`at`→attention、`sp`→similarity、`cc`→correlation、`vid`、`rkd`、`pkt`、`ab`→abound、`ft`→factor、`fsp`、`nst`。权重在 configs/cifar100.json 的 loss_weights 中，均取自上游 scripts/run_cifar_distill.sh：γ=1、α=0，β 分别为 FitNet 100（hint_layer 2）、AT 1000、SP 3000、CC 0.02、VID 1、RKD 1、PKT 30000、AB 1、FT 200、FSP 50、NST 50。AB、FT、FSP 先预训练 init_epochs=30 轮（connector / paraphraser / 学生），再做 240 轮训练；其中 AB、FSP 第二阶段只有交叉熵（loss_kd 记为 0），与上游一致。
+
+用法与 KD/CRD 相同，例如：
+
+```bash
+uv run CRD_ICLR2020/scripts/run_experiment.py fitnet --smoke --teacher "$TEACHER" --trusted-checkpoint
+uv run CRD_ICLR2020/scripts/run_experiment.py fitnet --seed 0 --teacher "$TEACHER" --trusted-checkpoint
+```
+
+这些方法只在本机 CPU 上用假数据和随机 teacher 跑通过 smoke 路径（每个方法 2 个 batch，两阶段方法 1 轮预训练），尚未在服务器和真实数据上运行；每个方法正式运行前先跑一次 smoke。CC 的损失在假数据上数值很大（~10⁹），真实数据上需观察是否发散。上游 resnet32x4→resnet8x4 参考值：FitNet 73.50、AT 73.44、SP 72.94、CC 72.97、VID 73.09、RKD 71.90、PKT 73.64、AB 73.17、FT 72.86、FSP 72.62、NST 73.30。
+
 ## 记录、失败与重复运行
 
 每个 runs/<stage>_trial<N>_seed<S>[_smoke]/ 下保存 manifest.json（命令、配置、teacher SHA256、退出状态、最后一轮、best）、pip-freeze.txt、console.log，以及 save/ 下的 config.json、environment.json、metrics.jsonl（含 lr 和学生的损失分项）、working-tree.patch、权重和 W&B 本地文件（wandb/）。数据、日志和权重不进 Git；需要同步的结果摘要请写在 RESULTS.md。
@@ -107,5 +120,6 @@ commit 后再同步到服务器，保证源码可追溯。working-tree.patch 不
 - 新增 seed、smoke batch 上限、运行元数据、逐轮指标和防覆盖规则。
 - 新增 W&B 记录（helper/experiment.py 的 start_run / record_epoch）；train_distill 额外返回未加权的 loss_cls / loss_div / loss_kd，训练本身不变。
 - run_experiment.py 拆出 run_stage 供 reproduce.ipynb 调用；命令行用法不变，另加 --no-wandb、--wandb-project、--wandb-entity。
+- run_experiment.py 和 configs/cifar100.json 扩展到 Table 1 的其他蒸馏方法（第四步）；KD/CRD 生成的训练命令不变。helper/pretrain.py 的预训练阶段遵守 smoke 的 batch 上限，预训练损失记到 W&B 的 init/train_loss（epoch 1−init_epochs … 0）。
 
-本次只针对 CIFAR-100 vanilla/KD/CRD 路径准备兼容性修改；其他蒸馏方法和 ImageNet 未验证。全部运行验证留待服务器完成。
+vanilla/KD/CRD 已在服务器 CIFAR-100 上完成 seed 0（见 RESULTS.md）；其他蒸馏方法只在本机做过假数据 smoke；ImageNet 未验证。
