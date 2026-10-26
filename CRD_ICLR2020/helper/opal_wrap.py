@@ -10,6 +10,9 @@ def opal_wrap(optimizer, trainable, train_loader, opt):
     epoch e (from 1) runs at learning_rate * lr_decay_rate ** #{m in lr_decay_epochs: e > m}."""
     import opal
 
+    # OPAL records the parameters' devices here and restores them there when it undoes a failing program
+    if torch.cuda.is_available() and any(not p.is_cuda for p in trainable.parameters()):
+        raise RuntimeError('opal_wrap: move the trainable modules to the GPU before wrapping the optimizer')
     steps_per_epoch = min(len(train_loader), opt.max_batches) if opt.max_batches else len(train_loader)
     total_steps = opt.epochs * steps_per_epoch
     scheduler = torch.optim.lr_scheduler.MultiStepLR(

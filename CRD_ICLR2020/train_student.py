@@ -290,12 +290,6 @@ def main():
                           momentum=opt.momentum,
                           weight_decay=opt.weight_decay)
 
-    # OPAL needs the schedule as a scheduler it can follow; it steps once per update and gives the same learning
-    # rates as adjust_learning_rate, which then is not called
-    scheduler = None
-    if opt.opal:
-        optimizer, scheduler = opal_wrap(optimizer, trainable_list, train_loader, opt)
-
     # append teacher after optimizer to avoid weight_decay
     module_list.append(model_t)
 
@@ -303,6 +297,13 @@ def main():
         module_list.cuda()
         criterion_list.cuda()
         cudnn.benchmark = not opt.deterministic
+
+    # OPAL needs the schedule as a scheduler it can follow; it steps once per update and gives the same learning
+    # rates as adjust_learning_rate, which then is not called. Wrap only now: OPAL records each parameter's device
+    # and puts the parameters back there when it undoes a failing program
+    scheduler = None
+    if opt.opal:
+        optimizer, scheduler = opal_wrap(optimizer, trainable_list, train_loader, opt)
 
     # validate teacher accuracy
     teacher_acc, _, _ = validate(val_loader, model_t, criterion_cls, opt)
