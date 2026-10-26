@@ -175,7 +175,8 @@ def run_stage(stage, config=ROOT / 'configs/cifar100.json', teacher=None, seed=0
 
 def read_metrics(folder):
     """The per-epoch rows of one run folder's metrics.jsonl."""
-    metrics = list(Path(folder).glob('save/**/metrics.jsonl'))
+    # save/<models or student_model>/<model name>/metrics.jsonl only: OPAL writes another metrics.jsonl below it
+    metrics = list(Path(folder).glob('save/*/*/metrics.jsonl'))
     if len(metrics) != 1:
         raise RuntimeError(f'Expected exactly one metrics file in {folder}')
     return [json.loads(line) for line in metrics[0].read_text(encoding='utf-8').splitlines()]

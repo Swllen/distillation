@@ -118,6 +118,8 @@ uv run CRD_ICLR2020/scripts/run_experiment.py kd --seed 0 --teacher "$TEACHER" -
 uv run CRD_ICLR2020/scripts/run_experiment.py crd --seed 0 --teacher "$TEACHER" --trusted-checkpoint --opal --opal-max-cost-usd 15
 ```
 
+代理 shell 的沙箱在 OPAL 的 `agent-tmp/` 里建 Unix socket（`srt-mux-<pid>-<n>.sock`），Linux 限制这种路径最长 107 个字符，而 OPAL 的记录目录很深（约 180 个字符）。所以 `helper/opal_wrap.py` 在 OPAL 启动前把 `agent-tmp` 建成链接，指向 `/tmp/claude-<uid>/opal-XXXXXXXX`（Claude Code 自己的私有临时目录，权限 700，重启时清空）；OPAL 0.3.8 用 `.resolve()` 取这个路径，记录仍留在运行目录里。`opal doctor` 用的是 `/tmp`，查不出这个问题。2026-10-26 的 `crd_opal_trial2_seed0` 还没有这个修复：代理的 shell 全程不可用，也没能读到训练脚本，其结果（最后一轮 75.05）不能代表 OPAL 正常工作时的表现。
+
 运行目录是 `runs/<stage>_opal_trial<N>_seed<S>/`，W&B 组 `<stage>_opal`；OPAL 自己的记录在其下 `save/student_model/*_opal/opal/`：`uv run opal show <该目录>` 每次决策一行，`uv run opal report <该目录>` 生成 report.html（损失、学习率、每次决策的理由和代码改动），`programs/vNNN` 保存每一版优化器代码。默认训练等待代理（`--opal-blocking false` 则不等）；决策次数默认由 OPAL 定（≤50，等待时间约不超过训练时间 4 倍），`--opal-decisions` 可改。Team 账户按席位额度计，额度用完时代理不可用，每次决策最多等 30 分钟（`--opal_unavailable_timeout`，train_student.py），之后跳过该决策、用当前程序继续训练。订阅登录下 `max_cost_usd` 依据 Claude Code 报告的估计花费，不是账单；第一次运行后用 `opal show` 确认有花费记录，否则只能靠决策次数限制用量。
 
 代理写的优化器代码在训练进程中以你的权限运行，不在沙箱内；作者指出短、已调好的配方提升有限，且同设置重跑结果可能不同。notebook 第 4 节把 OPAL 运行单列为 `kd+opal`、`crd+opal`，plot_methods.py 的图不含它们。
