@@ -11,3 +11,4 @@ mnist/configs/*
 !mnist/configs/student_distill.toml
 wandb/
 *.log
+mnist/opal_runs/

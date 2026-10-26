@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import tempfile
 import time
 import tomllib
 from collections.abc import Callable
@@ -189,6 +191,10 @@ OPTIONAL = {
     "lr_min": 0.0,
     "exclude_digits": [],
     "soft_loss": "forward",  # train_student.py only
+    "opal": False,  # train_student.py only, as are the opal_* settings below
+    "opal_backend": "claude",
+    "opal_max_cost_usd": 0.0,  # 0: no cap
+    "opal_decisions": 0,  # 0: OPAL's default
 }
 
 
@@ -263,6 +269,54 @@ def momentum_at(args: argparse.Namespace, epoch: int) -> float:
     return args.momentum_initial + (epoch / args.momentum_epochs) * (args.momentum_final - args.momentum_initial)
 
 
+class HintonMomentum(torch.optim.Optimizer):
+    """The momentum update of [5] as a torch optimizer (so that OPAL can wrap it):
+    dw_t = p dw_{t-1} - (1 - p) eps <grad>,  w_t = w_{t-1} + dw_t,
+    with eps = group["lr"] and p = group["momentum"], both set every epoch by EpochSchedule."""
+
+    def __init__(self, params, lr: float, momentum: float):
+        super().__init__(params, dict(lr=lr, momentum=momentum))
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        for group in self.param_groups:
+            params = [q for q in group["params"] if q.grad is not None]
+            deltas = []
+            for q in params:
+                if "delta" not in self.state[q]:
+                    self.state[q]["delta"] = torch.zeros_like(q)
+                deltas.append(self.state[q]["delta"])
+            mom, eps = group["momentum"], group["lr"]
+            torch._foreach_mul_(deltas, mom)
+            torch._foreach_add_(deltas, [q.grad for q in params], alpha=-(1 - mom) * eps)
+            torch._foreach_add_(params, deltas)
+
+
+class EpochSchedule:
+    """Sets every group's lr to lr_at and, for HintonMomentum, its momentum to momentum_at.
+    Call step() at the end of each epoch."""
+
+    def __init__(self, optimizer: torch.optim.Optimizer, args: argparse.Namespace):
+        self.optimizer, self.args, self.epoch = optimizer, args, 0
+        self._apply()
+
+    def step(self) -> None:
+        self.epoch += 1
+        self._apply()
+
+    def _apply(self) -> None:
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr_at(self.args, self.epoch)
+            if "momentum" in group:
+                group["momentum"] = momentum_at(self.args, self.epoch)
+
+    def state_dict(self) -> dict:
+        return {"epoch": self.epoch}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.epoch = state["epoch"]
+
+
 def start_run(args: argparse.Namespace, job: str, paper_test_errors: int | None = None):
     """Start a W&B run (a no-op run with --no-wandb). Every metric is plotted against epoch."""
     run = wandb.init(
@@ -285,8 +339,11 @@ def start_run(args: argparse.Namespace, job: str, paper_test_errors: int | None 
 LossFn = Callable[[torch.Tensor, torch.Tensor, torch.Tensor], dict[str, torch.Tensor]]
 
 
-def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], loss_fn: LossFn, run) -> list[dict]:
-    """Train and return the evaluation history.
+def train(
+    model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], loss_fn: LossFn, run, opal_goal: str = ""
+) -> list[dict]:
+    """Train and return the evaluation history. With opal_goal (train_student.py --opal) the
+    optimizer is wrapped by OPAL; see opal_wrap.
 
     Every step: jitter the minibatch, compute the loss terms, take one optimizer step,
     then project each hidden unit's incoming weights onto the max-norm ball. The
@@ -313,7 +370,10 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
     if adam:
         opt = torch.optim.Adam(params, lr=args.lr, betas=(args.adam_beta1, args.adam_beta2))
     else:
-        deltas = [torch.zeros_like(q) for q in params]
+        opt = HintonMomentum(params, lr=args.lr, momentum=args.momentum_initial)
+    schedule = EpochSchedule(opt, args)
+    if opal_goal:
+        opt = opal_wrap(opt, schedule, model, args, n, steps_per_epoch, opal_goal)
 
     print(f"device={args.device}  params={sum(q.numel() for q in params):,}  steps={args.epochs * steps_per_epoch:,}")
     run.summary["params"] = sum(q.numel() for q in params)
@@ -322,10 +382,7 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
     sums: dict[str, torch.Tensor] = {}
     window = 0
     for epoch in range(args.epochs):
-        eps, mom = lr_at(args, epoch), momentum_at(args, epoch)
-        if adam:
-            for group in opt.param_groups:
-                group["lr"] = eps
+        eps, mom = lr_at(args, epoch), momentum_at(args, epoch)  # the schedule's values; OPAL's agent may change them
         model.train()
         perm = torch.randperm(n, device=args.device)
         epoch_sums: dict[str, torch.Tensor] = {}
@@ -342,14 +399,12 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
                     terms[f"grad_{name}"] = g
                 # Per-image gradient on the output logits (the loss is a batch mean, hence * batch size).
                 terms["logit_grad_norm"] = logit_grad.norm(dim=1).mean() * len(x)
-                if adam:
-                    for q, g in zip(params, grads):
-                        q.grad = g
-                    opt.step()
-                else:
-                    torch._foreach_mul_(deltas, mom)
-                    torch._foreach_add_(deltas, grads, alpha=-(1 - mom) * eps)
-                    torch._foreach_add_(params, deltas)
+            for q, g in zip(params, grads):
+                q.grad = g
+            if opal_goal:
+                opt.step(loss=terms["loss"])  # OPAL shows the agent the training loss
+            else:
+                opt.step()
             if args.max_norm > 0:
                 model.apply_max_norm(args.max_norm)
 
@@ -367,6 +422,7 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
                 sums.clear()
                 window = 0
 
+        schedule.step()
         done = epoch + 1
         if done % args.eval_every == 0 or done == args.epochs:
             test = evaluate(model, x_test, y_test, loss_fn)
@@ -386,6 +442,8 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
                 entry["test_errors_excluded"] = sum(test_by_class[d] for d in args.exclude_digits)
                 excluded_info = f" ({entry['test_errors_excluded']} on {args.exclude_digits})"
             history.append(entry)
+            if opal_goal:  # recorded in OPAL's run folder and report; the agent does not see it
+                opt.log(test_errors=test["errors"], test_loss=test["loss"], train_errors=train_eval["errors"])
             log = {"epoch": done, "train/epoch_loss": mean_loss, "time/elapsed_s": time.time() - start}
             log.update({f"test/{k}": v for k, v in test.items()})
             log.update({f"test/errors_on_{d}": test_by_class[d] for d in range(10)})
@@ -400,7 +458,59 @@ def train(model: MLP, args: argparse.Namespace, data: tuple[torch.Tensor, ...], 
                 f"{grad_info}  {optim_info}  {time.time() - start:.0f}s",
                 flush=True,
             )
+    if opal_goal:
+        opt.close()
     return history
+
+
+# Linux limits a Unix socket path to 107 characters; the sandbox of the agent's shell makes sockets
+# such as srt-mux-<pid>-<n>.sock (up to about 30 characters) in the run folder's agent-tmp/.
+SOCKET_PATH_MAX = 107
+SOCKET_NAME_MAX = 30
+
+
+def short_agent_tmp(run_dir: Path) -> None:
+    """Make <run_dir>/agent-tmp a link to a new private folder under /tmp/claude-<uid> (Claude Code's own
+    temp folder), so the sandbox's sockets get a short path; the records stay in run_dir. OPAL 0.3.8
+    resolves the link (backends/claude.py). Linux only: elsewhere the agent's shell has no sandbox."""
+    if not hasattr(os, "getuid"):
+        return
+    base = Path(tempfile.gettempdir()) / f"claude-{os.getuid()}"
+    base.mkdir(mode=0o700, exist_ok=True)
+    target = tempfile.mkdtemp(prefix="opal-", dir=base)  # mode 0700, unique name
+    if len(target) + 1 + SOCKET_NAME_MAX > SOCKET_PATH_MAX:
+        raise RuntimeError(f"short_agent_tmp: {target} is too long for the sandbox sockets")
+    (run_dir / "agent-tmp").symlink_to(target)
+
+
+def opal_wrap(opt, schedule, model: MLP, args: argparse.Namespace, n: int, steps_per_epoch: int, goal: str):
+    """Wrap the optimizer with OPAL (https://github.com/xingjian-bai/opal): a coding agent rewrites the
+    optimizer program while the model trains. The starting program calls opt.step() and schedule.step()
+    unchanged, so with backend "keep" (no agent) the run matches the plain one bit for bit.
+    Records go to opal_runs/<checkpoint name>/; train_student.py's --opal-* flags set the options."""
+    import opal
+
+    run_dir = HERE / "opal_runs" / args.out.stem
+    if run_dir.exists():
+        raise FileExistsError(f"{run_dir} exists; pass another --out (or --name and --out) for a new OPAL run")
+    run_dir.mkdir(parents=True)
+    options = dict(epochs=args.epochs, train_size=n, batch_size=args.batch_size, same_order_each_epoch=False)
+    if args.opal_backend == "claude":
+        short_agent_tmp(run_dir)
+    if args.opal_max_cost_usd > 0:
+        options["max_cost_usd"] = args.opal_max_cost_usd
+    if args.opal_decisions > 0:
+        options["decisions"] = args.opal_decisions
+    return opal.wrap(
+        opt,
+        model,
+        scheduler=schedule,
+        total_steps=args.epochs * steps_per_epoch,
+        goal=goal,
+        backend=args.opal_backend,
+        run_dir=run_dir,
+        **options,
+    )
 
 
 def save_run(model: MLP, args: argparse.Namespace, history: list[dict], run) -> None:

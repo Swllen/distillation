@@ -111,7 +111,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--temperature", type=float)
     p.add_argument("--hard-weight", type=float, help="weight of the hard-label term, 0..1")
     p.add_argument("--soft-loss", choices=SOFT_LOSSES, help="form of the soft-target term (default forward)")
+    # OPAL (reactive optimizer): a coding agent rewrites the optimizer during training; see common.opal_wrap
+    p.add_argument("--opal", action=argparse.BooleanOptionalAction, help="wrap the optimizer with opal.wrap")
+    p.add_argument("--opal-backend", help='claude (default), or keep (no agent: must match the plain run)')
+    p.add_argument("--opal-max-cost-usd", type=float, help="stop asking the agent after this; default no cap")
+    p.add_argument("--opal-decisions", type=int, help="times the agent is asked; default OPAL's")
     return p
+
+
+def opal_goal(args: argparse.Namespace, teacher_hidden: int) -> str:
+    """OPAL's goal sentence: what the run trains and what it is judged by."""
+    student = f"{args.hidden}-{args.hidden} ReLU MLP student on MNIST"
+    if args.teacher:
+        targets = (
+            f"distilled from a frozen {teacher_hidden}-{teacher_hidden} teacher's soft targets at T={args.temperature:g} "
+            f"(loss = {1 - args.hard_weight:g} * T^2 * the {args.soft_loss!r} soft-target term of distillation_loss "
+            f"+ {args.hard_weight:g} * cross-entropy on the true labels)"
+        )
+    else:
+        targets = "trained on the true labels with cross-entropy"
+    excluded = f", with digits {args.exclude_digits} left out of the training set" if args.exclude_digits else ""
+    return f"{student} {targets}{excluded}; judged by the number of test errors (out of 10,000) after the last epoch."
 
 
 def make_args(settings: dict, name: str, **kwargs) -> argparse.Namespace:
@@ -155,7 +175,8 @@ def run_student(args: argparse.Namespace) -> list[dict]:
         def loss_fn(logits: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> dict[str, torch.Tensor]:
             return {"loss": F.cross_entropy(logits, y)}
 
-    history = train(model, args, data, loss_fn, run)
+    goal = opal_goal(args, teacher.fc1.out_features if args.teacher else 0) if args.opal else ""
+    history = train(model, args, data, loss_fn, run, opal_goal=goal)
     save_run(model, args, history, run)
     return history
 
