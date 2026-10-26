@@ -195,6 +195,7 @@ OPTIONAL = {
     "opal_backend": "claude",
     "opal_max_cost_usd": 0.0,  # 0: no cap
     "opal_decisions": 0,  # 0: OPAL's default
+    "opal_shell": True,  # False: the agent gets file tools only, no shell
 }
 
 
@@ -497,6 +498,10 @@ def opal_wrap(opt, schedule, model: MLP, args: argparse.Namespace, n: int, steps
     options = dict(epochs=args.epochs, train_size=n, batch_size=args.batch_size, same_order_each_epoch=False)
     if args.opal_backend == "claude":
         short_agent_tmp(run_dir)
+        if not args.opal_shell:
+            # On a Linux host whose AppArmor denies nested user namespaces inside bubblewrap (Ubuntu's
+            # unpriv_bwrap profile), the sandbox starts but every shell command fails.
+            options["backend_options"] = dict(sandbox=False)
     if args.opal_max_cost_usd > 0:
         options["max_cost_usd"] = args.opal_max_cost_usd
     if args.opal_decisions > 0:

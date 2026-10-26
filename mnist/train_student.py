@@ -116,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--opal-backend", help='claude (default), or keep (no agent: must match the plain run)')
     p.add_argument("--opal-max-cost-usd", type=float, help="stop asking the agent after this; default no cap")
     p.add_argument("--opal-decisions", type=int, help="times the agent is asked; default OPAL's")
+    p.add_argument(
+        "--opal-shell",
+        action=argparse.BooleanOptionalAction,
+        help="give the agent a sandboxed shell (default); --no-opal-shell: file tools only (OPAL's sandbox=False)",
+    )
     return p
 
 
