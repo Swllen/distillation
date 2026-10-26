@@ -100,6 +100,28 @@ uv run CRD_ICLR2020/scripts/run_experiment.py fitnet --seed 0 --teacher "$TEACHE
 
 这些方法只在本机 CPU 上用假数据和随机 teacher 跑通过 smoke 路径（每个方法 2 个 batch，两阶段方法 1 轮预训练），尚未在服务器和真实数据上运行；每个方法正式运行前先跑一次 smoke。CC 的损失在假数据上数值很大（~10⁹），真实数据上需观察是否发散。上游 resnet32x4→resnet8x4 参考值：FitNet 73.50、AT 73.44、SP 72.94、CC 72.97、VID 73.09、RKD 71.90、PKT 73.64、AB 73.17、FT 72.86、FSP 72.62、NST 73.30。
 
+## OPAL（分支 crd-opal，只用于 KD/CRD）
+
+[OPAL](https://github.com/xingjian-bai/opal)（0.3.8，[博客](https://xingjianbai.com/reactive-optimizers/)）包装原来的 SGD：训练中一个代理（Claude Code）定期读训练统计，改写优化器程序（学习率、momentum、更新规则等）。代理只看到训练 loss、参数名与形状、自己的分析结果和训练脚本的只读副本；每个 epoch 的测试精度只用 `opt.log` 记下，代理看不到。
+
+加 `--opal` 时，学习率改由 `MultiStepLR` 每个 update 走一步（衰减点 150/180/210 × 每 epoch 的 update 数），与 adjust_learning_rate 给出的学习率相同；`helper/opal_wrap.py` 负责包装，`train_distill` 调用 `optimizer.step(loss=loss)`。本机用假数据验证过：KD、CRD 在 `--opal-backend keep`（不调用代理）下与不加 `--opal` 的每轮指标、学习率和最终权重逐位相同（含 OPAL 的第 50 步检查）。
+
+服务器准备（一次）：Claude Code ≥ 2.1.280，用 Team 账户 `claude auth login`，`claude auth status --text` 显示 claude.ai 登录；环境中不能有 `ANTHROPIC_API_KEY`（会盖过 Team 登录）；`bwrap`、`socat` 可用（代理的 shell 沙箱）。
+
+```bash
+git fetch && git checkout crd-opal && uv sync
+uv run opal doctor          # 免费、离线
+uv run opal doctor --live   # 一次很小的代理调用
+TEACHER="$PWD/CRD_ICLR2020/save/models/resnet32x4_vanilla/ckpt_epoch_240.pth"
+uv run CRD_ICLR2020/scripts/run_experiment.py kd --smoke --teacher "$TEACHER" --trusted-checkpoint --opal --opal-backend keep
+uv run CRD_ICLR2020/scripts/run_experiment.py kd --seed 0 --teacher "$TEACHER" --trusted-checkpoint --opal --opal-max-cost-usd 15
+uv run CRD_ICLR2020/scripts/run_experiment.py crd --seed 0 --teacher "$TEACHER" --trusted-checkpoint --opal --opal-max-cost-usd 15
+```
+
+运行目录是 `runs/<stage>_opal_trial<N>_seed<S>/`，W&B 组 `<stage>_opal`；OPAL 自己的记录在其下 `save/student_model/*_opal/opal/`：`uv run opal show <该目录>` 每次决策一行，`uv run opal report <该目录>` 生成 report.html（损失、学习率、每次决策的理由和代码改动），`programs/vNNN` 保存每一版优化器代码。默认训练等待代理（`--opal-blocking false` 则不等）；决策次数默认由 OPAL 定（≤50，等待时间约不超过训练时间 4 倍），`--opal-decisions` 可改。Team 账户按席位额度计，额度用完时代理不可用，每次决策最多等 30 分钟（`--opal_unavailable_timeout`，train_student.py），之后跳过该决策、用当前程序继续训练。订阅登录下 `max_cost_usd` 依据 Claude Code 报告的估计花费，不是账单；第一次运行后用 `opal show` 确认有花费记录，否则只能靠决策次数限制用量。
+
+代理写的优化器代码在训练进程中以你的权限运行，不在沙箱内；作者指出短、已调好的配方提升有限，且同设置重跑结果可能不同。notebook 第 4 节把 OPAL 运行单列为 `kd+opal`、`crd+opal`，plot_methods.py 的图不含它们。
+
 ## 记录、失败与重复运行
 
 每个 runs/<stage>_trial<N>_seed<S>[_smoke]/ 下保存 manifest.json（命令、配置、teacher SHA256、退出状态、最后一轮、best）、pip-freeze.txt、console.log，以及 save/ 下的 config.json、environment.json、metrics.jsonl（含 lr 和学生的损失分项）、working-tree.patch、权重和 W&B 本地文件（wandb/）。数据、日志和权重不进 Git；需要同步的结果摘要请写在 RESULTS.md。

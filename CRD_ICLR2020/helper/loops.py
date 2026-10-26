@@ -64,8 +64,8 @@ def train_vanilla(epoch, train_loader, model, criterion, optimizer, opt):
     return top1.avg, losses.avg
 
 
-def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, opt):
-    """One epoch distillation"""
+def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, opt, scheduler=None):
+    """One epoch distillation; with --opal, `optimizer` is OPAL's wrapper and `scheduler` steps after every update"""
     # set modules as train()
     for module in module_list:
         module.train()
@@ -198,7 +198,12 @@ def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, o
         # ===================backward=====================
         optimizer.zero_grad()
         loss.backward()
-        optimizer.step()
+        if opt.opal:
+            optimizer.step(loss=loss)  # OPAL shows the agent the training loss
+        else:
+            optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
         # ===================meters=====================
         batch_time.update(time.time() - end)

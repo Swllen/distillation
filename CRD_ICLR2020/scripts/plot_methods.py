@@ -22,11 +22,14 @@ NAMES = {"vanilla": "vanilla", "kd": "KD", "crd": "CRD", "crd_kd": "CRD+KD", "fi
 
 
 def last_top1(runs_dir, seed):
-    """{stage: last-epoch test top-1} of the completed, non-smoke runs of `seed` (trial 1 if there are several)."""
+    """{stage: last-epoch test top-1} of the completed, non-smoke runs of `seed` (trial 1 if there are several).
+    OPAL runs (crd-opal branch) are left out: they are not the paper's recipe."""
     found = {}
     for manifest_file in sorted(Path(runs_dir).glob("*/manifest.json")):
         manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
         if manifest.get("smoke") or manifest.get("status") != "completed" or manifest.get("seed") != seed:
+            continue
+        if manifest.get("opal"):
             continue
         stage = manifest["stage"]
         if stage not in found or manifest.get("trial") == 1:

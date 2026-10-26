@@ -29,6 +29,7 @@ from distiller_zoo import PKT, ABLoss, FactorTransfer, KDSVD, FSP, NSTLoss
 from crd.criterion import CRDLoss
 
 from helper.loops import train_distill as train, validate
+from helper.opal_wrap import opal_wrap
 from helper.pretrain import init
 
 
@@ -90,6 +91,16 @@ def parse_option():
     # hint layer
     parser.add_argument('--hint_layer', default=2, type=int, choices=[0, 1, 2, 3, 4])
 
+    # OPAL (reactive optimizer): an agent rewrites the optimizer during training; see helper/opal_wrap.py
+    parser.add_argument('--opal', action='store_true', help='wrap the optimizer with opal.wrap')
+    parser.add_argument('--opal_backend', default='claude', help='claude, or keep (no agent: must match the plain run)')
+    parser.add_argument('--opal_max_cost_usd', type=float, default=None, help='stop asking the agent after this')
+    parser.add_argument('--opal_decisions', type=int, default=None, help='times the agent is asked; default OPAL\'s')
+    parser.add_argument('--opal_blocking', default='true', choices=['true', 'false'],
+                        help='true: training waits for each decision')
+    parser.add_argument('--opal_unavailable_timeout', type=float, default=1800,
+                        help='seconds to wait for an unavailable agent (e.g. a usage limit) before skipping a decision')
+
     add_arguments(parser)
     opt = parser.parse_args()
     if not opt.path_t or not os.path.isfile(opt.path_t):
@@ -114,6 +125,8 @@ def parse_option():
     opt.model_name = 'S:{}_T:{}_{}_{}_r:{}_a:{}_b:{}_{}'.format(opt.model_s, opt.model_t, opt.dataset, opt.distill,
                                                                 opt.gamma, opt.alpha, opt.beta, opt.trial)
     opt.model_name = opt.model_name.replace(':', '-') + '_seed_{}'.format(opt.seed)
+    if opt.opal:
+        opt.model_name += '_opal'
     if opt.max_batches:
         opt.model_name += '_smoke'
 
@@ -277,6 +290,12 @@ def main():
                           momentum=opt.momentum,
                           weight_decay=opt.weight_decay)
 
+    # OPAL needs the schedule as a scheduler it can follow; it steps once per update and gives the same learning
+    # rates as adjust_learning_rate, which then is not called
+    scheduler = None
+    if opt.opal:
+        optimizer, scheduler = opal_wrap(optimizer, trainable_list, train_loader, opt)
+
     # append teacher after optimizer to avoid weight_decay
     module_list.append(model_t)
 
@@ -293,17 +312,22 @@ def main():
     # routine
     for epoch in range(1, opt.epochs + 1):
 
-        adjust_learning_rate(epoch, opt, optimizer)
+        if scheduler is None:
+            adjust_learning_rate(epoch, opt, optimizer)
+        lr = optimizer.param_groups[0]['lr']  # this epoch's learning rate, before a scheduler moves it
         print("==> training...")
 
         time1 = time.time()
-        train_acc, train_loss, loss_terms = train(epoch, train_loader, module_list, criterion_list, optimizer, opt)
+        train_acc, train_loss, loss_terms = train(epoch, train_loader, module_list, criterion_list, optimizer, opt,
+                                                  scheduler)
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
         test_acc, tect_acc_top5, test_loss = validate(val_loader, model_s, criterion_cls, opt)
         record_epoch(opt, epoch, train_acc, train_loss, test_acc, tect_acc_top5, test_loss, run,
-                     lr=optimizer.param_groups[0]['lr'], epoch_time=time2 - time1, **loss_terms)
+                     lr=lr, epoch_time=time2 - time1, **loss_terms)
+        if opt.opal:  # recorded in OPAL's run folder; the agent does not see test results
+            optimizer.log(epoch=epoch, test_acc=float(test_acc), test_loss=float(test_loss))
 
         # save the best model
         if test_acc > best_acc:
@@ -341,6 +365,8 @@ def main():
     }
     save_file = os.path.join(opt.save_folder, '{}_last.pth'.format(opt.model_s))
     torch.save(state, save_file)
+    if opt.opal:
+        optimizer.close()
     run.finish()
 
 

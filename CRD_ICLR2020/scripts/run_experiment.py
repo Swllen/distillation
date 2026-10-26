@@ -22,17 +22,19 @@ STAGES = ['teacher', 'vanilla'] + DISTILLED
 # Two-stage methods: init_epochs of pretraining (helper/pretrain.py) before distillation.
 TWO_STAGE = ['ab', 'ft', 'fsp']
 # Lines shown with echo=False: one summary per epoch plus the start and end of a run.
-SUMMARY = ('epoch ', ' * Acc', 'teacher accuracy', 'best accuracy', '==> loading', 'Files already', 'Downloading')
+SUMMARY = ('epoch ', ' * Acc', 'teacher accuracy', 'best accuracy', '==> loading', 'Files already', 'Downloading',
+           '[opal]')
 
 
-def run_name(stage, seed=0, trial=1, smoke=False):
-    return f'{stage}_trial{trial}_seed{seed}' + ('_smoke' if smoke else '')
+def run_name(stage, seed=0, trial=1, smoke=False, opal=False):
+    return f'{stage}' + ('_opal' if opal else '') + f'_trial{trial}_seed{seed}' + ('_smoke' if smoke else '')
 
 
 def build_command(stage, config, teacher, seed, trial, smoke, deterministic, trusted_checkpoint,
-                  wandb, wandb_project, wandb_entity):
+                  wandb, wandb_project, wandb_entity, opal=None):
+    """opal: None, or dict(backend=, max_cost_usd=, decisions=, blocking=) for train_student.py --opal."""
     distilled = stage in DISTILLED
-    name = run_name(stage, seed, trial, smoke)
+    name = run_name(stage, seed, trial, smoke, bool(opal))
     command = [sys.executable, '-u', str(ROOT / ('train_student.py' if distilled else 'train_teacher.py'))]
     for key in ['batch_size', 'learning_rate', 'lr_decay_epochs', 'lr_decay_rate', 'weight_decay', 'momentum']:
         command += ['--' + key, str(config[key])]
@@ -44,7 +46,8 @@ def build_command(stage, config, teacher, seed, trial, smoke, deterministic, tru
     if deterministic:
         command += ['--deterministic']
     command += ['--wandb' if wandb else '--no-wandb', '--wandb_project', wandb_project,
-                '--wandb_name', name, '--wandb_group', stage + ('_smoke' if smoke else '')]
+                '--wandb_name', name,
+                '--wandb_group', stage + ('_opal' if opal else '') + ('_smoke' if smoke else '')]
     if wandb_entity:
         command += ['--wandb_entity', wandb_entity]
     if distilled:
@@ -60,6 +63,13 @@ def build_command(stage, config, teacher, seed, trial, smoke, deterministic, tru
             command += [flag, str(value)]
         if trusted_checkpoint:
             command += ['--trusted_checkpoint']
+        if opal:
+            command += ['--opal', '--opal_backend', opal['backend'],
+                        '--opal_blocking', 'true' if opal['blocking'] else 'false']
+            if opal.get('max_cost_usd') is not None:
+                command += ['--opal_max_cost_usd', str(opal['max_cost_usd'])]
+            if opal.get('decisions') is not None:
+                command += ['--opal_decisions', str(opal['decisions'])]
     else:
         command += ['--model', config['teacher' if stage == 'teacher' else 'student']]
     return command
@@ -88,8 +98,8 @@ def sha256(path):
 
 def run_stage(stage, config=ROOT / 'configs/cifar100.json', teacher=None, seed=0, trial=1, smoke=False,
               deterministic=False, trusted_checkpoint=False, wandb=True, wandb_project='distillation-crd',
-              wandb_entity='', echo=True):
-    """Train one stage in runs/<stage>_trial<N>_seed<S>[_smoke]/ and return its manifest.
+              wandb_entity='', echo=True, opal=None):
+    """Train one stage in runs/<stage>[_opal]_trial<N>_seed<S>[_smoke]/ and return its manifest.
 
     Refuses to reuse an existing run folder. Raises RuntimeError if training fails.
     echo=False prints only the per-epoch summary lines; console.log always has everything.
@@ -101,18 +111,20 @@ def run_stage(stage, config=ROOT / 'configs/cifar100.json', teacher=None, seed=0
     teacher = Path(teacher).resolve() if teacher else None
     if stage in DISTILLED and (teacher is None or not teacher.is_file()):
         raise ValueError('KD/CRD require a teacher checkpoint (--teacher /absolute/path/to/checkpoint.pth)')
-    name = run_name(stage, seed, trial, smoke)
+    if opal and stage not in DISTILLED:
+        raise ValueError('--opal is for distilled stages (train_student.py) only')
+    name = run_name(stage, seed, trial, smoke, bool(opal))
     folder = ROOT / 'runs' / name
     folder.mkdir(parents=True, exist_ok=False)
     command = build_command(stage, config, teacher, seed, trial, smoke, deterministic, trusted_checkpoint,
-                            wandb, wandb_project, wandb_entity)
+                            wandb, wandb_project, wandb_entity, opal)
     environment = os.environ.copy()
     environment['CRD_DATA_ROOT'] = str(Path(environment.get('CRD_DATA_ROOT', ROOT / 'data')).resolve())
     if deterministic:
         environment.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     manifest = dict(stage=stage, seed=seed, trial=trial, config_file=str(config_path), config=config,
                     command=command, teacher=str(teacher) if teacher else None,
-                    teacher_sha256=sha256(teacher) if teacher else None, smoke=smoke, status='starting')
+                    teacher_sha256=sha256(teacher) if teacher else None, smoke=smoke, opal=opal, status='starting')
     path = folder / 'manifest.json'
     path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     # Installed packages, read directly so that it also works in uv venvs, which have no pip.
@@ -191,11 +203,19 @@ def main():
                         help='log to Weights & Biases (default on)')
     parser.add_argument('--wandb-project', default='distillation-crd')
     parser.add_argument('--wandb-entity', default='', help='W&B user or team; default your own account')
+    parser.add_argument('--opal', action='store_true', help='OPAL: a coding agent rewrites the optimizer (KD/CRD...)')
+    parser.add_argument('--opal-backend', default='claude', help='claude, or keep (no agent, no cost)')
+    parser.add_argument('--opal-max-cost-usd', type=float, help='stop asking the agent after this estimated spend')
+    parser.add_argument('--opal-decisions', type=int, help="times the agent is asked; default OPAL's")
+    parser.add_argument('--opal-blocking', default='true', choices=['true', 'false'],
+                        help='true: training waits for each decision')
     args = parser.parse_args()
+    opal = dict(backend=args.opal_backend, max_cost_usd=args.opal_max_cost_usd, decisions=args.opal_decisions,
+                blocking=args.opal_blocking == 'true') if args.opal else None
     try:
         run_stage(args.stage, args.config, args.teacher, args.seed, args.trial, args.smoke,
                   args.deterministic, args.trusted_checkpoint, args.wandb, args.wandb_project,
-                  args.wandb_entity)
+                  args.wandb_entity, opal=opal)
     except ValueError as error:
         parser.error(str(error))
     except RuntimeError as error:
